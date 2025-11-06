@@ -1,0 +1,93 @@
+# Docker Compose configuration for Infrastructure Monitoring Agent
+version: '3.8'
+
+services:
+  monitoring-agent:
+    build: .
+    container_name: infra-monitoring-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Web Server Configuration
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8000
+      - WEB_DEBUG=false
+      
+      # Database Configuration
+      - DATABASE_PATH=/app/data/monitoring_agent.db
+      
+      # Logging Configuration
+      - LOG_LEVEL=INFO
+      - LOG_FILE=/app/logs/monitoring_agent.log
+      - AUDIT_LOG_PATH=/app/logs/audit.log
+      
+      # Security Configuration (set these in .env file)
+      - MONITORING_MASTER_KEY=${MONITORING_MASTER_KEY}
+      - API_SECRET_KEY=${API_SECRET_KEY}
+      - API_TOKEN_EXPIRY_HOURS=${API_TOKEN_EXPIRY_HOURS:-24}
+      
+      # Dashboard Authentication
+      - DASHBOARD_USERNAME=${DASHBOARD_USERNAME}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      
+      # SLA Configuration
+      - SLA_THRESHOLD=${SLA_THRESHOLD:-95.0}
+      - DOWNTIME_ALERT_THRESHOLD_DAYS=${DOWNTIME_ALERT_THRESHOLD_DAYS:-3}
+      - MONITORING_WINDOW_HOURS=${MONITORING_WINDOW_HOURS:-24}
+      
+      # InfluxDB Configuration
+      - INFLUXDB_URL=${INFLUXDB_URL}
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
+      - INFLUXDB_ORG=${INFLUXDB_ORG}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
+      - INFLUXDB_TIMEOUT=${INFLUXDB_TIMEOUT:-30}
+      
+      # JIRA Configuration
+      - JIRA_URL=${JIRA_URL}
+      - JIRA_USERNAME=${JIRA_USERNAME}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY}
+      - JIRA_ISSUE_TYPE=${JIRA_ISSUE_TYPE:-Incident}
+      
+      # Monitoring Schedule
+      - MONITORING_SCHEDULE_HOUR=${MONITORING_SCHEDULE_HOUR:-6}
+      - MONITORING_SCHEDULE_MINUTE=${MONITORING_SCHEDULE_MINUTE:-0}
+      - MONITORING_TIMEZONE=${MONITORING_TIMEZONE:-UTC}
+      
+      # Vessel Configuration
+      - VESSEL_IDS=${VESSEL_IDS}
+      
+    volumes:
+      # Persistent data storage
+      - ./data:/app/data
+      - ./logs:/app/logs
+      
+      # Configuration files (optional)
+      - ./config:/app/config:ro
+      
+    env_file:
+      - .env
+    
+    networks:
+      - monitoring-network
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+networks:
+  monitoring-network:
+    driver: bridge
+
+volumes:
+  monitoring-data:
+    driver: local
+  monitoring-logs:
+    driver: local

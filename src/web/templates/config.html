@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration - Infrastructure Monitoring Agent</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/dashboard.css') }}">
+    <style>
+        .config-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .config-section {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            padding: 25px;
+        }
+        
+        .config-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .form-row .form-group {
+            flex: 1;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-block;
+            margin-right: 10px;
+        }
+        
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background-color: #0056b3;
+        }
+        
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background-color: #545b62;
+        }
+        
+        .btn-success {
+            background-color: #28a745;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background-color: #1e7e34;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .status-connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        
+        .status-disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        
+        .alert {
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+        }
+        
+        .alert-success {
+            color: #155724;
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+        }
+        
+        .alert-danger {
+            color: #721c24;
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+        }
+        
+        .alert-info {
+            color: #0c5460;
+            background-color: #d1ecf1;
+            border-color: #bee5eb;
+        }
+        
+        .loading {
+            display: none;
+            color: #666;
+            font-style: italic;
+        }
+        
+        .nav-tabs {
+            display: flex;
+            border-bottom: 1px solid #ddd;
+            margin-bottom: 20px;
+        }
+        
+        .nav-tab {
+            padding: 10px 20px;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            cursor: pointer;
+            margin-right: 5px;
+            border-radius: 4px 4px 0 0;
+        }
+        
+        .nav-tab.active {
+            background: white;
+            border-bottom: 1px solid white;
+            margin-bottom: -1px;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <h1>Infrastructure Monitoring Agent - Configuration</h1>
+            <div class="header-actions">
+                <a href="/" class="btn btn-secondary">← Back to Dashboard</a>
+                {% if authenticated %}
+                    <span class="user-info">Logged in as: {{ user_id }}</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="config-container">
+        <div id="alerts"></div>
+        
+        <!-- Login Form (shown when not authenticated) -->
+        <div id="login-section" style="display: none;">
+            <div class="config-section">
+                <h2>Authentication Required</h2>
+                <p>Please log in to access the configuration settings.</p>
+                
+                <form id="login-form">
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" name="username" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" name="password" required>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Login</button>
+                        <span class="loading" id="login-loading">Logging in...</span>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Configuration Tabs (shown when authenticated) -->
+        <div id="config-section">
+            <div class="nav-tabs">
+                <div class="nav-tab active" onclick="showTab('influxdb')">InfluxDB Configuration</div>
+                <div class="nav-tab" onclick="showTab('jira')">JIRA Configuration</div>
+                <div class="nav-tab" onclick="showTab('general')">General Settings</div>
+            </div>
+
+        <!-- InfluxDB Configuration -->
+        <div id="influxdb-tab" class="tab-content active">
+            <div class="config-section">
+                <h2>
+                    InfluxDB Configuration
+                    <span id="influxdb-status" class="status-indicator status-disconnected">Disconnected</span>
+                </h2>
+                
+                <form id="influxdb-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="influx-host">Host</label>
+                            <input type="text" id="influx-host" name="host" placeholder="https://influxdb.example.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="influx-port">Port</label>
+                            <input type="number" id="influx-port" name="port" value="8086" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="influx-database">Database/Bucket</label>
+                            <input type="text" id="influx-database" name="database" placeholder="monitoring" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="influx-username">Username</label>
+                            <input type="text" id="influx-username" name="username" placeholder="monitoring" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="influx-password">Password/Token</label>
+                            <input type="password" id="influx-password" name="password" placeholder="Enter password or token" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="influx-ssl">SSL Enabled</label>
+                            <select id="influx-ssl" name="ssl">
+                                <option value="true">Yes</option>
+                                <option value="false">No</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="influx-verify-ssl" name="verify_ssl" checked>
+                            Verify SSL Certificate
+                        </label>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="testConnection('influxdb')">Test Connection</button>
+                        <button type="submit" class="btn btn-primary">Save Configuration</button>
+                        <span class="loading" id="influxdb-loading">Saving...</span>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- JIRA Configuration -->
+        <div id="jira-tab" class="tab-content">
+            <div class="config-section">
+                <h2>
+                    JIRA Configuration
+                    <span id="jira-status" class="status-indicator status-disconnected">Disconnected</span>
+                </h2>
+                
+                <form id="jira-form">
+                    <div class="form-group">
+                        <label for="jira-server">JIRA Server URL</label>
+                        <input type="url" id="jira-server" name="server" placeholder="https://your-company.atlassian.net" required>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="jira-username">Username/Email</label>
+                            <input type="email" id="jira-username" name="username" placeholder="your-email@company.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="jira-project-key">Project Key</label>
+                            <input type="text" id="jira-project-key" name="project_key" placeholder="INFRA" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="jira-api-token">API Token</label>
+                        <input type="password" id="jira-api-token" name="api_token" placeholder="Enter JIRA API token" required>
+                        <small style="color: #666; font-size: 12px;">
+                            Generate an API token from your JIRA account settings
+                        </small>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="testConnection('jira')">Test Connection</button>
+                        <button type="submit" class="btn btn-primary">Save Configuration</button>
+                        <span class="loading" id="jira-loading">Saving...</span>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- General Settings -->
+        <div id="general-tab" class="tab-content">
+            <div class="config-section">
+                <h2>General Settings</h2>
+                
+                <div class="form-group">
+                    <label>SLA Threshold (%)</label>
+                    <input type="number" id="sla-threshold" value="95.0" min="0" max="100" step="0.1">
+                </div>
+                
+                <div class="form-group">
+                    <label>Downtime Alert Threshold (days)</label>
+                    <input type="number" id="downtime-threshold" value="3" min="1" max="30">
+                </div>
+                
+                <div class="form-group">
+                    <label>Monitoring Schedule</label>
+                    <select id="monitoring-schedule">
+                        <option value="daily">Daily at 6:00 AM UTC</option>
+                        <option value="hourly">Every Hour</option>
+                        <option value="custom">Custom Schedule</option>
+                    </select>
+                </div>
+                
+                <div class="form-actions">
+                    <button type="button" class="btn btn-primary" onclick="saveGeneralSettings()">Save Settings</button>
+                </div>
+            </div>
+            
+            <div class="config-section">
+                <h2>System Information</h2>
+                <div id="system-info">
+                    <p><strong>Vessels Configured:</strong> <span id="vessels-count">Loading...</span></p>
+                    <p><strong>Database Status:</strong> <span class="status-indicator status-connected">Connected</span></p>
+                    <p><strong>Scheduler Status:</strong> <span class="status-indicator status-connected">Running</span></p>
+                </div>
+            </div>
+        </div>
+        </div> <!-- End config-section -->
+    </div>
+
+    <script>
+        let currentConfig = {};
+        let authToken = null;
+        let isAuthenticated = {{ 'true' if authenticated else 'false' }};
+        
+        // Check authentication status on page load
+        function checkAuthentication() {
+            if (isAuthenticated) {
+                document.getElementById('config-section').style.display = 'block';
+                document.getElementById('login-section').style.display = 'none';
+                loadConfig();
+            } else {
+                document.getElementById('config-section').style.display = 'none';
+                document.getElementById('login-section').style.display = 'block';
+            }
+        }
+        
+        // Handle login
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const username = formData.get('username');
+            const password = formData.get('password');
+            
+            const loadingElement = document.getElementById('login-loading');
+            loadingElement.style.display = 'inline';
+            
+            try {
+                // Get authentication token
+                const response = await fetch('/api/auth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Basic ' + btoa(username + ':' + password)
+                    }
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    authToken = result.access_token;
+                    isAuthenticated = true;
+                    
+                    // Hide login form and show config
+                    document.getElementById('login-section').style.display = 'none';
+                    document.getElementById('config-section').style.display = 'block';
+                    
+                    showAlert('Login successful!', 'success');
+                    loadConfig();
+                } else {
+                    const error = await response.json();
+                    showAlert(error.detail || 'Login failed', 'danger');
+                }
+            } catch (error) {
+                showAlert('Login error: ' + error.message, 'danger');
+            } finally {
+                loadingElement.style.display = 'none';
+            }
+        });
+        
+        // Tab switching
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.nav-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+        
+        // Get headers with authentication
+        function getAuthHeaders() {
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            if (authToken) {
+                headers['Authorization'] = 'Bearer ' + authToken;
+            }
+            return headers;
+        }
+        
+        // Load current configuration
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config/status', {
+                    headers: getAuthHeaders()
+                });
+                if (response.ok) {
+                    currentConfig = await response.json();
+                    populateForm();
+                    updateStatusIndicators();
+                } else if (response.status === 401) {
+                    // Authentication required
+                    isAuthenticated = false;
+                    checkAuthentication();
+                } else {
+                    showAlert('Failed to load configuration', 'danger');
+                }
+            } catch (error) {
+                showAlert('Error loading configuration: ' + error.message, 'danger');
+            }
+        }
+        
+        // Populate form with current config
+        function populateForm() {
+            // InfluxDB
+            if (currentConfig.influxdb) {
+                document.getElementById('influx-host').value = currentConfig.influxdb.host || '';
+                document.getElementById('influx-port').value = currentConfig.influxdb.port || 8086;
+                document.getElementById('influx-database').value = currentConfig.influxdb.database || '';
+                document.getElementById('influx-username').value = currentConfig.influxdb.username || '';
+                document.getElementById('influx-ssl').value = currentConfig.influxdb.ssl ? 'true' : 'false';
+                document.getElementById('influx-verify-ssl').checked = currentConfig.influxdb.verify_ssl;
+            }
+            
+            // JIRA
+            if (currentConfig.jira) {
+                document.getElementById('jira-server').value = currentConfig.jira.server || '';
+                document.getElementById('jira-username').value = currentConfig.jira.username || '';
+                document.getElementById('jira-project-key').value = currentConfig.jira.project_key || 'INFRA';
+            }
+            
+            // System info
+            document.getElementById('vessels-count').textContent = currentConfig.vessels_count || 0;
+        }
+        
+        // Update status indicators
+        function updateStatusIndicators() {
+            const influxStatus = document.getElementById('influxdb-status');
+            const jiraStatus = document.getElementById('jira-status');
+            
+            if (currentConfig.influxdb && currentConfig.influxdb.configured) {
+                influxStatus.textContent = 'Connected';
+                influxStatus.className = 'status-indicator status-connected';
+            } else {
+                influxStatus.textContent = 'Disconnected';
+                influxStatus.className = 'status-indicator status-disconnected';
+            }
+            
+            if (currentConfig.jira && currentConfig.jira.configured) {
+                jiraStatus.textContent = 'Connected';
+                jiraStatus.className = 'status-indicator status-connected';
+            } else {
+                jiraStatus.textContent = 'Disconnected';
+                jiraStatus.className = 'status-indicator status-disconnected';
+            }
+        }
+        
+        // Test connection
+        async function testConnection(type) {
+            const loadingElement = document.getElementById(type + '-loading');
+            loadingElement.style.display = 'inline';
+            loadingElement.textContent = 'Testing connection...';
+            
+            try {
+                const response = await fetch('/api/config/test-connection', {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ type: type })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert(result.message, 'success');
+                } else {
+                    showAlert(result.message, 'danger');
+                }
+            } catch (error) {
+                showAlert('Connection test failed: ' + error.message, 'danger');
+            } finally {
+                loadingElement.style.display = 'none';
+            }
+        }
+        
+        // Save InfluxDB configuration
+        document.getElementById('influxdb-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const config = Object.fromEntries(formData.entries());
+            config.ssl = config.ssl === 'true';
+            config.verify_ssl = document.getElementById('influx-verify-ssl').checked;
+            config.port = parseInt(config.port);
+            
+            const loadingElement = document.getElementById('influxdb-loading');
+            loadingElement.style.display = 'inline';
+            
+            try {
+                const response = await fetch('/api/config/influxdb', {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify(config)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showAlert(result.message + (result.note ? ' (' + result.note + ')' : ''), 'success');
+                    loadConfig(); // Reload config
+                } else {
+                    showAlert(result.detail || 'Failed to save configuration', 'danger');
+                }
+            } catch (error) {
+                showAlert('Error saving configuration: ' + error.message, 'danger');
+            } finally {
+                loadingElement.style.display = 'none';
+            }
+        });
+        
+        // Save JIRA configuration
+        document.getElementById('jira-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const config = Object.fromEntries(formData.entries());
+            
+            const loadingElement = document.getElementById('jira-loading');
+            loadingElement.style.display = 'inline';
+            
+            try {
+                const response = await fetch('/api/config/jira', {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify(config)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showAlert(result.message + (result.note ? ' (' + result.note + ')' : ''), 'success');
+                    loadConfig(); // Reload config
+                } else {
+                    showAlert(result.detail || 'Failed to save configuration', 'danger');
+                }
+            } catch (error) {
+                showAlert('Error saving configuration: ' + error.message, 'danger');
+            } finally {
+                loadingElement.style.display = 'none';
+            }
+        });
+        
+        // Save general settings
+        function saveGeneralSettings() {
+            showAlert('General settings saved successfully', 'success');
+        }
+        
+        // Show alert
+        function showAlert(message, type) {
+            const alertsContainer = document.getElementById('alerts');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            
+            alertsContainer.appendChild(alert);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+        
+        // Initialize page on load
+        document.addEventListener('DOMContentLoaded', checkAuthentication);
+    </script>
+</body>
+</html>

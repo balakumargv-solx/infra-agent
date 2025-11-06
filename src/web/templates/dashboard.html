@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infrastructure Monitoring Agent - Fleet Dashboard</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div class="header-content">
+                <h1><i class="fas fa-ship"></i> Infrastructure Monitoring Agent</h1>
+                <div class="header-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Total Vessels</span>
+                        <span class="stat-value" id="total-vessels">{{ total_vessels }}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Last Updated</span>
+                        <span class="stat-value" id="last-updated">Loading...</span>
+                    </div>
+                    <div class="connection-status" id="connection-status">
+                        <i class="fas fa-circle"></i>
+                        <span>Connecting...</span>
+                    </div>
+                    <div class="header-actions">
+                        <a href="/config" class="config-btn" title="Configuration">
+                            <i class="fas fa-cog"></i> Settings
+                        </a>
+                        {% if authenticated %}
+                            <span class="user-info">{{ user_id }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Fleet Summary -->
+        <section class="fleet-summary">
+            <div class="summary-cards">
+                <div class="summary-card operational">
+                    <div class="card-icon">
+                        <i class="fas fa-check-circle"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="vessels-operational">0</h3>
+                        <p>Operational</p>
+                    </div>
+                </div>
+                <div class="summary-card degraded">
+                    <div class="card-icon">
+                        <i class="fas fa-exclamation-triangle"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="vessels-degraded">0</h3>
+                        <p>Degraded</p>
+                    </div>
+                </div>
+                <div class="summary-card critical">
+                    <div class="card-icon">
+                        <i class="fas fa-times-circle"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="vessels-critical">0</h3>
+                        <p>Critical</p>
+                    </div>
+                </div>
+                <div class="summary-card offline">
+                    <div class="card-icon">
+                        <i class="fas fa-power-off"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="vessels-offline">0</h3>
+                        <p>Offline</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="fleet-metrics">
+                <div class="metric-item">
+                    <span class="metric-label">Fleet Compliance Rate</span>
+                    <div class="metric-value">
+                        <span id="fleet-compliance">0%</span>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="compliance-progress"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="metric-item">
+                    <span class="metric-label">Average Uptime</span>
+                    <div class="metric-value">
+                        <span id="average-uptime">0%</span>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="uptime-progress"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="metric-item">
+                    <span class="metric-label">Active Violations</span>
+                    <span class="metric-value" id="total-violations">0</span>
+                </div>
+                <div class="metric-item">
+                    <span class="metric-label">Persistent Violations</span>
+                    <span class="metric-value critical" id="persistent-violations">0</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Controls -->
+        <section class="dashboard-controls">
+            <div class="control-group">
+                <button class="btn btn-primary" onclick="refreshData()">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+                <button class="btn btn-secondary" onclick="toggleAutoRefresh()">
+                    <i class="fas fa-play" id="auto-refresh-icon"></i>
+                    <span id="auto-refresh-text">Start Auto-Refresh</span>
+                </button>
+            </div>
+            <div class="control-group">
+                <label for="status-filter">Filter by Status:</label>
+                <select id="status-filter" onchange="filterVessels()">
+                    <option value="all">All Vessels</option>
+                    <option value="operational">Operational</option>
+                    <option value="degraded">Degraded</option>
+                    <option value="critical">Critical</option>
+                    <option value="offline">Offline</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <button class="btn btn-info" onclick="showViolations()">
+                    <i class="fas fa-exclamation-triangle"></i> View Violations
+                </button>
+            </div>
+        </section>
+
+        <!-- Vessels Grid -->
+        <section class="vessels-section">
+            <h2>Fleet Overview</h2>
+            <div class="vessels-grid" id="vessels-grid">
+                <!-- Vessel cards will be populated here -->
+            </div>
+        </section>
+
+        <!-- Loading Overlay -->
+        <div class="loading-overlay" id="loading-overlay">
+            <div class="loading-spinner">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading fleet data...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vessel Detail Modal -->
+    <div class="modal" id="vessel-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-vessel-title">Vessel Details</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-vessel-content">
+                <!-- Vessel details will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Violations Modal -->
+    <div class="modal" id="violations-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>SLA Violations</h2>
+                <button class="modal-close" onclick="closeViolationsModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="violations-content">
+                <!-- Violations will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

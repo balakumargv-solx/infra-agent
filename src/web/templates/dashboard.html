@@ -134,6 +134,9 @@
                 <button class="btn btn-info" onclick="showViolations()">
                     <i class="fas fa-exclamation-triangle"></i> View Violations
                 </button>
+                <button class="btn btn-secondary" onclick="showSchedulerLogs()">
+                    <i class="fas fa-history"></i> Scheduler Logs
+                </button>
             </div>
         </section>
 
@@ -163,6 +166,19 @@
             </div>
             <div class="modal-body" id="modal-vessel-content">
                 <!-- Vessel details will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Scheduler Run Log Modal -->
+    <div class="modal" id="scheduler-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Scheduler Run History</h2>
+                <button class="modal-close" onclick="closeSchedulerModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="scheduler-modal-content">
+                <!-- Scheduler run logs will be populated here -->
             </div>
         </div>
     </div>

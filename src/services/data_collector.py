@@ -158,12 +158,30 @@ class DataCollector:
             downtime_aging = ping_data.calculate_downtime_aging()
             last_ping_time = ping_data.get_last_ping_time() or datetime.utcnow()
             
+            # Create DeviceStatus objects from ping_data devices
+            from ..models.data_models import DeviceStatus
+            devices = []
+            for device_ping in ping_data.devices:
+                device_status = DeviceStatus(
+                    ip_address=device_ping.ip_address,
+                    uptime_percentage=device_ping.get_uptime_percentage(self.monitoring_window_hours),
+                    current_status=device_ping.get_current_status(),
+                    downtime_aging=device_ping.calculate_downtime_aging(),
+                    last_ping_time=device_ping.get_last_ping_time() or datetime.utcnow(),
+                    has_data=len(device_ping.timestamps) > 0,
+                    ping_count=len(device_ping.timestamps),
+                    successful_pings=sum(device_ping.ping_success) if device_ping.ping_success else 0
+                )
+                devices.append(device_status)
+            
             component_status = ComponentStatus(
                 component_type=component_type,
                 uptime_percentage=uptime_percentage,
                 current_status=current_status,
                 downtime_aging=downtime_aging,
-                last_ping_time=last_ping_time
+                last_ping_time=last_ping_time,
+                devices=devices,
+                has_data=len(devices) > 0 and any(d.has_data for d in devices)
             )
             
             logger.debug(
@@ -185,7 +203,9 @@ class DataCollector:
                 uptime_percentage=0.0,
                 current_status=OperationalStatus.UNKNOWN,
                 downtime_aging=timedelta(0),
-                last_ping_time=datetime.utcnow()
+                last_ping_time=datetime.utcnow(),
+                devices=[],
+                has_data=False
             )
     
     async def collect_all_vessels_metrics(

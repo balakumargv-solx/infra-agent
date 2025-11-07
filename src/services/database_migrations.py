@@ -51,6 +51,11 @@ class DatabaseMigration:
                 'version': 3,
                 'description': 'Add system state management',
                 'sql': self._get_system_state_sql()
+            },
+            {
+                'version': 4,
+                'description': 'Add scheduler run logging tables',
+                'sql': self._get_scheduler_run_logging_sql()
             }
         ]
     
@@ -137,6 +142,39 @@ class DatabaseMigration:
                 state_value TEXT NOT NULL,
                 state_type TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        ]
+    
+    def _get_scheduler_run_logging_sql(self) -> List[str]:
+        """Get SQL for scheduler run logging tables."""
+        return [
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_runs (
+                id TEXT PRIMARY KEY,
+                start_time TIMESTAMP NOT NULL,
+                end_time TIMESTAMP,
+                total_vessels INTEGER NOT NULL,
+                successful_vessels INTEGER DEFAULT 0,
+                failed_vessels INTEGER DEFAULT 0,
+                retry_attempts INTEGER DEFAULT 0,
+                status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+                duration_seconds REAL,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_vessel_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                vessel_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                success BOOLEAN NOT NULL,
+                query_duration_seconds REAL,
+                error_message TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES scheduler_runs (id) ON DELETE CASCADE
             )
             """
         ]
@@ -230,7 +268,12 @@ class DatabaseMigration:
             "CREATE INDEX IF NOT EXISTS idx_alert_vessel_component ON alert_history(vessel_id, component_type)",
             "CREATE INDEX IF NOT EXISTS idx_jira_tickets_vessel_component ON jira_tickets(vessel_id, component_type)",
             "CREATE INDEX IF NOT EXISTS idx_jira_tickets_status ON jira_tickets(ticket_status)",
-            "CREATE INDEX IF NOT EXISTS idx_system_state_key ON system_state(state_key)"
+            "CREATE INDEX IF NOT EXISTS idx_system_state_key ON system_state(state_key)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_start_time ON scheduler_runs(start_time)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_vessel_results_run_id ON scheduler_vessel_results(run_id)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_vessel_results_vessel_id ON scheduler_vessel_results(vessel_id)",
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_vessel_results_timestamp ON scheduler_vessel_results(timestamp)"
         ]
         
         with sqlite3.connect(self.database_path) as conn:
@@ -277,7 +320,9 @@ class DatabaseMigration:
                     'component_status_history',
                     'alert_history',
                     'jira_tickets',
-                    'system_state'
+                    'system_state',
+                    'scheduler_runs',
+                    'scheduler_vessel_results'
                 ]
                 
                 cursor.execute("""

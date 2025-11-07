@@ -24,13 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class PingData:
-    """Raw ping data retrieved from InfluxDB."""
+class DevicePingData:
+    """Raw ping data for a single device/IP address."""
     
-    component_type: ComponentType
+    ip_address: str
     timestamps: List[datetime]
     ping_success: List[bool]
-    vessel_id: str
     
     def get_uptime_percentage(self, window_hours: int = 24) -> float:
         """Calculate uptime percentage for the given time window."""
@@ -61,34 +60,103 @@ class PingData:
         latest_success = self.ping_success[-1]
         return OperationalStatus.UP if latest_success else OperationalStatus.DOWN
     
+    def calculate_downtime_aging(self) -> timedelta:
+        """Calculate how long the device has been down."""
+        if not self.timestamps or not self.ping_success:
+            return timedelta(0)
+        
+        # Find the last successful ping
+        for i in range(len(self.ping_success) - 1, -1, -1):
+            if self.ping_success[i]:
+                # Calculate time since last successful ping
+                return datetime.now(timezone.utc) - self.timestamps[i]
+        
+        # If no successful pings found, return time since first ping
+        return datetime.now(timezone.utc) - self.timestamps[0]
+    
     def get_last_ping_time(self) -> Optional[datetime]:
         """Get the timestamp of the most recent ping."""
+        return self.timestamps[-1] if self.timestamps else None
+    
+    def has_recent_data(self, hours: int = 2) -> bool:
+        """Check if we have data within the specified hours."""
         if not self.timestamps:
+            return False
+        
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        return self.timestamps[-1] >= cutoff_time
+
+
+@dataclass
+class PingData:
+    """Raw ping data retrieved from InfluxDB with per-device tracking."""
+    
+    component_type: ComponentType
+    devices: List[DevicePingData]  # Data for individual devices
+    vessel_id: str
+    
+    def get_uptime_percentage(self, window_hours: int = 24) -> float:
+        """Calculate average uptime percentage across all devices."""
+        if not self.devices:
+            return 0.0
+        
+        # Calculate average uptime across all devices
+        total_uptime = 0.0
+        device_count = 0
+        
+        for device in self.devices:
+            device_uptime = device.get_uptime_percentage(window_hours)
+            total_uptime += device_uptime
+            device_count += 1
+        
+        if device_count == 0:
+            return 0.0
+        
+        return total_uptime / device_count
+    
+    def get_current_status(self) -> OperationalStatus:
+        """Determine current operational status based on device statuses."""
+        if not self.devices:
+            return OperationalStatus.UNKNOWN
+        
+        # Component is UP if at least 50% of devices are UP
+        up_devices = sum(1 for device in self.devices if device.get_current_status() == OperationalStatus.UP)
+        total_devices = len(self.devices)
+        
+        if up_devices == 0:
+            return OperationalStatus.DOWN
+        elif up_devices >= total_devices * 0.5:
+            return OperationalStatus.UP
+        else:
+            return OperationalStatus.DOWN
+    
+    def get_last_ping_time(self) -> Optional[datetime]:
+        """Get the timestamp of the most recent ping across all devices."""
+        if not self.devices:
             return None
-        return max(self.timestamps)
+        
+        latest_time = None
+        for device in self.devices:
+            if device.timestamps:
+                device_latest = max(device.timestamps)
+                if latest_time is None or device_latest > latest_time:
+                    latest_time = device_latest
+        
+        return latest_time
     
     def calculate_downtime_aging(self) -> timedelta:
-        """Calculate how long the component has been down continuously."""
-        if not self.ping_success or not self.timestamps:
+        """Calculate the maximum downtime aging among all devices."""
+        if not self.devices:
             return timedelta(0)
         
-        # Sort by timestamp to ensure chronological order
-        sorted_data = sorted(zip(self.timestamps, self.ping_success), key=lambda x: x[0])
+        # Return the maximum downtime aging among all devices
+        max_downtime = timedelta(0)
+        for device in self.devices:
+            device_downtime = device.calculate_downtime_aging()
+            if device_downtime > max_downtime:
+                max_downtime = device_downtime
         
-        # Find the start of the current downtime period
-        downtime_start = None
-        for timestamp, success in reversed(sorted_data):
-            if success:
-                # Found a successful ping, downtime started after this
-                break
-            downtime_start = timestamp
-        
-        if downtime_start is None:
-            # No downtime found
-            return timedelta(0)
-        
-        # Calculate duration from start of downtime to now
-        return datetime.now(timezone.utc) - downtime_start
+        return max_downtime
 
 
 class InfluxDBClientWrapper:
@@ -264,8 +332,7 @@ class InfluxDBClientWrapper:
                 logger.warning(f"No IP addresses configured for component type {component_type.value}")
                 return PingData(
                     component_type=component_type,
-                    timestamps=[],
-                    ping_success=[],
+                    devices=[],
                     vessel_id=self.vessel_id
                 )
             
@@ -285,8 +352,8 @@ class InfluxDBClientWrapper:
             # Execute query
             result = await self._execute_query_http(query)
             
-            timestamps = []
-            ping_success = []
+            # Group data by IP address
+            device_data = {}
             
             if 'results' in result and result['results']:
                 if 'series' in result['results'][0]:
@@ -299,25 +366,54 @@ class InfluxDBClientWrapper:
                             
                             # Parse timestamp
                             timestamp_str = record.get('time')
-                            if timestamp_str:
+                            ip_address = record.get('url')
+                            
+                            if timestamp_str and ip_address:
                                 timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                                timestamps.append(timestamp)
                                 
                                 # Determine success: result_code == 0 and packet_loss < 100%
                                 result_code = record.get('result_code', 1)
                                 packet_loss = record.get('percent_packet_loss', 100)
                                 success = (result_code == 0) and (packet_loss < 100)
-                                ping_success.append(success)
+                                
+                                # Group by IP address
+                                if ip_address not in device_data:
+                                    device_data[ip_address] = {
+                                        'timestamps': [],
+                                        'ping_success': []
+                                    }
+                                
+                                device_data[ip_address]['timestamps'].append(timestamp)
+                                device_data[ip_address]['ping_success'].append(success)
             
+            # Create DevicePingData objects for each IP
+            devices = []
+            for ip_address in ip_addresses:  # Include all configured IPs, even if no data
+                if ip_address in device_data:
+                    device_ping_data = DevicePingData(
+                        ip_address=ip_address,
+                        timestamps=device_data[ip_address]['timestamps'],
+                        ping_success=device_data[ip_address]['ping_success']
+                    )
+                else:
+                    # No data for this IP - create empty device data
+                    device_ping_data = DevicePingData(
+                        ip_address=ip_address,
+                        timestamps=[],
+                        ping_success=[]
+                    )
+                
+                devices.append(device_ping_data)
+            
+            total_records = sum(len(device.timestamps) for device in devices)
             logger.info(
-                f"Retrieved {len(timestamps)} ping records for "
-                f"{self.vessel_id}/{component_type.value}"
+                f"Retrieved {total_records} ping records for "
+                f"{self.vessel_id}/{component_type.value} across {len(devices)} devices"
             )
             
             return PingData(
                 component_type=component_type,
-                timestamps=timestamps,
-                ping_success=ping_success,
+                devices=devices,
                 vessel_id=self.vessel_id
             )
         

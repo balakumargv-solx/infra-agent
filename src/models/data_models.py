@@ -6,11 +6,53 @@ for vessel metrics, component status, SLA tracking, and issue management.
 """
 
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, asdict
 from pydantic import BaseModel, Field, validator
+import uuid
 
 from .enums import ComponentType, OperationalStatus, IssueSeverity
+
+
+@dataclass
+class DeviceStatus:
+    """Status information for an individual device (IP address)."""
+    
+    ip_address: str
+    uptime_percentage: float
+    current_status: OperationalStatus
+    downtime_aging: timedelta
+    last_ping_time: datetime
+    has_data: bool  # True if we have recent data, False if no data available
+    ping_count: int  # Number of ping records found
+    successful_pings: int  # Number of successful pings
+    
+    def __post_init__(self):
+        """Validate data after initialization."""
+        if not 0 <= self.uptime_percentage <= 100:
+            raise ValueError("Uptime percentage must be between 0 and 100")
+        
+        if self.downtime_aging.total_seconds() < 0:
+            raise ValueError("Downtime aging cannot be negative")
+        
+        if self.ping_count < 0 or self.successful_pings < 0:
+            raise ValueError("Ping counts cannot be negative")
+        
+        if self.successful_pings > self.ping_count:
+            raise ValueError("Successful pings cannot exceed total ping count")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'ip_address': self.ip_address,
+            'uptime_percentage': self.uptime_percentage,
+            'current_status': self.current_status.value,
+            'downtime_aging': self.downtime_aging.total_seconds(),
+            'last_ping_time': self.last_ping_time.isoformat(),
+            'has_data': self.has_data,
+            'ping_count': self.ping_count,
+            'successful_pings': self.successful_pings
+        }
 
 
 @dataclass
@@ -22,6 +64,8 @@ class ComponentStatus:
     current_status: OperationalStatus
     downtime_aging: timedelta
     last_ping_time: datetime
+    devices: List[DeviceStatus]  # Individual device statuses
+    has_data: bool  # True if component has any data
     
     def __post_init__(self):
         """Validate data after initialization."""
@@ -33,10 +77,15 @@ class ComponentStatus:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        data = asdict(self)
-        data['downtime_aging'] = self.downtime_aging.total_seconds()
-        data['last_ping_time'] = self.last_ping_time.isoformat()
-        return data
+        return {
+            'component_type': self.component_type.value,
+            'uptime_percentage': self.uptime_percentage,
+            'current_status': self.current_status.value,
+            'downtime_aging': self.downtime_aging.total_seconds(),
+            'last_ping_time': self.last_ping_time.isoformat(),
+            'devices': [device.to_dict() for device in self.devices],
+            'has_data': self.has_data
+        }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ComponentStatus':
@@ -290,3 +339,243 @@ class IssueSummaryModel(BaseModel):
     
     class Config:
         use_enum_values = True
+
+
+@dataclass
+class VesselQueryResult:
+    """Result of querying a single vessel during scheduler run."""
+    
+    vessel_id: str
+    attempt_number: int
+    success: bool
+    query_duration: timedelta
+    error_message: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    
+    def __post_init__(self):
+        """Validate data after initialization."""
+        if not self.vessel_id or not self.vessel_id.strip():
+            raise ValueError("Vessel ID cannot be empty")
+        
+        if self.attempt_number < 1:
+            raise ValueError("Attempt number must be at least 1")
+        
+        if self.query_duration.total_seconds() < 0:
+            raise ValueError("Query duration cannot be negative")
+        
+        if self.timestamp is None:
+            self.timestamp = datetime.utcnow()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'vessel_id': self.vessel_id,
+            'attempt_number': self.attempt_number,
+            'success': self.success,
+            'query_duration_seconds': self.query_duration.total_seconds(),
+            'error_message': self.error_message,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'VesselQueryResult':
+        """Create instance from dictionary."""
+        data = data.copy()
+        data['query_duration'] = timedelta(seconds=data['query_duration_seconds'])
+        if data.get('timestamp'):
+            data['timestamp'] = datetime.fromisoformat(data['timestamp'])
+        data.pop('query_duration_seconds', None)
+        return cls(**data)
+
+
+@dataclass
+class SchedulerRunLog:
+    """Log record for a scheduler run execution."""
+    
+    run_id: str
+    start_time: datetime
+    total_vessels: int
+    end_time: Optional[datetime] = None
+    successful_vessels: int = 0
+    failed_vessels: int = 0
+    retry_attempts: int = 0
+    status: str = 'running'  # 'running', 'completed', 'failed'
+    duration: Optional[timedelta] = None
+    error_message: Optional[str] = None
+    
+    def __post_init__(self):
+        """Validate data after initialization."""
+        if not self.run_id or not self.run_id.strip():
+            raise ValueError("Run ID cannot be empty")
+        
+        if self.total_vessels < 0:
+            raise ValueError("Total vessels cannot be negative")
+        
+        if self.successful_vessels < 0 or self.failed_vessels < 0:
+            raise ValueError("Vessel counts cannot be negative")
+        
+        if self.retry_attempts < 0:
+            raise ValueError("Retry attempts cannot be negative")
+        
+        if self.status not in ['running', 'completed', 'failed']:
+            raise ValueError("Status must be 'running', 'completed', or 'failed'")
+        
+        # Calculate duration if end_time is set
+        if self.end_time and not self.duration:
+            self.duration = self.end_time - self.start_time
+    
+    @classmethod
+    def create_new(cls, total_vessels: int) -> 'SchedulerRunLog':
+        """Create a new scheduler run log with generated ID."""
+        return cls(
+            run_id=str(uuid.uuid4()),
+            start_time=datetime.utcnow(),
+            total_vessels=total_vessels
+        )
+    
+    def mark_completed(self, successful_vessels: int, failed_vessels: int, retry_attempts: int = 0) -> None:
+        """Mark the run as completed with final counts."""
+        self.end_time = datetime.utcnow()
+        self.successful_vessels = successful_vessels
+        self.failed_vessels = failed_vessels
+        self.retry_attempts = retry_attempts
+        self.status = 'completed' if failed_vessels == 0 else 'failed'
+        self.duration = self.end_time - self.start_time
+    
+    def mark_failed(self, error_message: str) -> None:
+        """Mark the run as failed with error message."""
+        self.end_time = datetime.utcnow()
+        self.status = 'failed'
+        self.error_message = error_message
+        self.duration = self.end_time - self.start_time
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'run_id': self.run_id,
+            'start_time': self.start_time.isoformat(),
+            'end_time': self.end_time.isoformat() if self.end_time else None,
+            'total_vessels': self.total_vessels,
+            'successful_vessels': self.successful_vessels,
+            'failed_vessels': self.failed_vessels,
+            'retry_attempts': self.retry_attempts,
+            'status': self.status,
+            'duration_seconds': self.duration.total_seconds() if self.duration else None,
+            'error_message': self.error_message
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'SchedulerRunLog':
+        """Create instance from dictionary."""
+        data = data.copy()
+        data['start_time'] = datetime.fromisoformat(data['start_time'])
+        if data.get('end_time'):
+            data['end_time'] = datetime.fromisoformat(data['end_time'])
+        if data.get('duration_seconds') is not None:
+            data['duration'] = timedelta(seconds=data['duration_seconds'])
+        data.pop('duration_seconds', None)
+        return cls(**data)
+
+
+@dataclass
+class SchedulerRunDetails:
+    """Detailed information about a scheduler run including vessel results."""
+    
+    run_summary: SchedulerRunLog
+    vessel_results: List[VesselQueryResult]
+    retry_summary: Dict[str, int]  # vessel_id -> retry_count
+    
+    def __post_init__(self):
+        """Validate data after initialization."""
+        if not isinstance(self.vessel_results, list):
+            raise ValueError("Vessel results must be a list")
+        
+        if not isinstance(self.retry_summary, dict):
+            raise ValueError("Retry summary must be a dictionary")
+    
+    def get_vessel_result_by_id(self, vessel_id: str) -> List[VesselQueryResult]:
+        """Get all query results for a specific vessel."""
+        return [result for result in self.vessel_results if result.vessel_id == vessel_id]
+    
+    def get_failed_vessels(self) -> List[str]:
+        """Get list of vessel IDs that failed all attempts."""
+        failed_vessels = set()
+        successful_vessels = set()
+        
+        for result in self.vessel_results:
+            if result.success:
+                successful_vessels.add(result.vessel_id)
+            else:
+                failed_vessels.add(result.vessel_id)
+        
+        # Return vessels that failed and never succeeded
+        return list(failed_vessels - successful_vessels)
+    
+    def get_retry_statistics(self) -> Dict[str, Any]:
+        """Get statistics about retry attempts."""
+        total_retries = sum(self.retry_summary.values())
+        vessels_with_retries = len([count for count in self.retry_summary.values() if count > 0])
+        
+        return {
+            'total_retry_attempts': total_retries,
+            'vessels_requiring_retries': vessels_with_retries,
+            'average_retries_per_vessel': total_retries / len(self.retry_summary) if self.retry_summary else 0,
+            'max_retries_for_vessel': max(self.retry_summary.values()) if self.retry_summary else 0
+        }
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'run_summary': self.run_summary.to_dict(),
+            'vessel_results': [result.to_dict() for result in self.vessel_results],
+            'retry_summary': self.retry_summary
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'SchedulerRunDetails':
+        """Create instance from dictionary."""
+        data = data.copy()
+        data['run_summary'] = SchedulerRunLog.from_dict(data['run_summary'])
+        data['vessel_results'] = [VesselQueryResult.from_dict(result) for result in data['vessel_results']]
+        return cls(**data)
+
+
+# Pydantic models for API validation
+class VesselQueryResultModel(BaseModel):
+    """Pydantic model for VesselQueryResult validation in APIs."""
+    
+    vessel_id: str = Field(min_length=1)
+    attempt_number: int = Field(ge=1)
+    success: bool
+    query_duration_seconds: float = Field(ge=0)
+    error_message: Optional[str] = None
+    timestamp: Optional[datetime] = None
+
+
+class SchedulerRunLogModel(BaseModel):
+    """Pydantic model for SchedulerRunLog validation in APIs."""
+    
+    run_id: str = Field(min_length=1)
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    total_vessels: int = Field(ge=0)
+    successful_vessels: int = Field(ge=0)
+    failed_vessels: int = Field(ge=0)
+    retry_attempts: int = Field(ge=0)
+    status: str = Field(pattern='^(running|completed|failed)$')
+    duration_seconds: Optional[float] = Field(None, ge=0)
+    error_message: Optional[str] = None
+    
+    @validator('end_time')
+    def validate_end_time(cls, v, values):
+        if v and 'start_time' in values and v < values['start_time']:
+            raise ValueError('end_time must be after start_time')
+        return v
+
+
+class SchedulerRunDetailsModel(BaseModel):
+    """Pydantic model for SchedulerRunDetails validation in APIs."""
+    
+    run_summary: SchedulerRunLogModel
+    vessel_results: List[VesselQueryResultModel]
+    retry_summary: Dict[str, int]

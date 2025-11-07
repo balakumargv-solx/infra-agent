@@ -15,6 +15,7 @@ import json
 import asyncio
 import time
 import secrets
+from datetime import datetime
 
 from ..config.config_models import Config
 from ..models.data_models import VesselMetrics, SLAStatus, ComponentStatus
@@ -87,6 +88,14 @@ def create_app(config: Config) -> FastAPI:
     sla_analyzer = SLAAnalyzer(config)
     fleet_dashboard = FleetDashboard(config, data_collector, sla_analyzer)
     connection_manager = ConnectionManager()
+    
+    # Initialize scheduler run logger
+    from ..services.scheduler_run_logger import SchedulerRunLogger
+    scheduler_run_logger = SchedulerRunLogger(config.database_path)
+    
+    # Initialize scheduler with WebSocket manager
+    from ..services.scheduler import MonitoringScheduler
+    monitoring_scheduler = MonitoringScheduler(config, websocket_manager=connection_manager)
     
     # Initialize security
     security_manager = get_security_manager()
@@ -262,10 +271,15 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/fleet-overview")
     async def get_fleet_overview(
         force_refresh: bool = False,
+        include_devices: bool = False,
         user_info: Optional[Dict[str, any]] = Depends(get_current_user)
     ):
         """
         Get fleet-wide overview with SLA status for all vessels
+        
+        Args:
+            force_refresh: If True, bypass cache and collect fresh data
+            include_devices: If True, include individual device details with IP addresses
         
         Returns:
             Fleet overview with vessel statuses and SLA compliance
@@ -275,12 +289,15 @@ def create_app(config: Config) -> FastAPI:
             
             # Get fleet overview from dashboard service
             fleet_overview = await fleet_dashboard.get_fleet_overview(force_refresh=force_refresh)
-            vessel_summaries = await fleet_dashboard.get_vessel_summaries(force_refresh=force_refresh)
+            vessel_summaries = await fleet_dashboard.get_vessel_summaries(
+                force_refresh=force_refresh, 
+                include_devices=include_devices
+            )
             
             # Format vessel data for response
             vessels_data = []
             for vessel_id, vessel_summary in vessel_summaries.items():
-                vessels_data.append({
+                vessel_data = {
                     "vessel_id": vessel_id,
                     "status": vessel_summary.status.value,
                     "compliance_rate": vessel_summary.compliance_rate,
@@ -289,7 +306,25 @@ def create_app(config: Config) -> FastAPI:
                     "components_total": vessel_summary.components_total,
                     "worst_component_uptime": vessel_summary.worst_component_uptime,
                     "last_updated": vessel_summary.last_updated.isoformat()
-                })
+                }
+                
+                # Include device details if requested
+                if include_devices and vessel_summary.devices:
+                    vessel_data["devices"] = []
+                    for device in vessel_summary.devices:
+                        device_data = {
+                            "ip_address": device.ip_address,
+                            "component_type": device.component_type.value,
+                            "uptime_percentage": device.uptime_percentage,
+                            "current_status": device.current_status.value,
+                            "downtime_aging_hours": device.downtime_aging_hours,
+                            "last_ping_time": device.last_ping_time.isoformat(),
+                            "has_data": device.has_data,
+                            "sync_status": device.sync_status
+                        }
+                        vessel_data["devices"].append(device_data)
+                
+                vessels_data.append(vessel_data)
             
             # Sort vessels by status severity (critical first)
             status_priority = {
@@ -313,7 +348,8 @@ def create_app(config: Config) -> FastAPI:
                     "persistent_violations": fleet_overview.persistent_violations
                 },
                 "vessels": vessels_data,
-                "timestamp": fleet_overview.last_updated.isoformat()
+                "timestamp": fleet_overview.last_updated.isoformat(),
+                "include_devices": include_devices
             }
             
             # Broadcast update to WebSocket clients
@@ -369,10 +405,30 @@ def create_app(config: Config) -> FastAPI:
                 }
                 components_detail.append(component_data)
             
+            # Format device details
+            devices_detail = []
+            for device in vessel_detail.devices:
+                device_data = {
+                    "ip_address": device.ip_address,
+                    "component_type": device.component_type.value,
+                    "uptime_percentage": device.uptime_percentage,
+                    "current_status": device.current_status.value,
+                    "downtime_aging": {
+                        "hours": device.downtime_aging_hours,
+                        "formatted": _format_duration_hours(device.downtime_aging_hours)
+                    },
+                    "last_ping_time": device.last_ping_time.isoformat(),
+                    "has_data": device.has_data,
+                    "sync_status": device.sync_status,
+                    "sync_status_class": f"sync-{device.sync_status.replace('_', '-')}"
+                }
+                devices_detail.append(device_data)
+            
             response_data = {
                 "vessel_id": vessel_detail.vessel_id,
                 "timestamp": vessel_detail.last_updated.isoformat(),
                 "components": components_detail,
+                "devices": devices_detail,
                 "overall_status": vessel_detail.overall_status.value,
                 "sla_compliance_rate": vessel_detail.compliance_rate,
                 "violations": vessel_detail.violations
@@ -694,6 +750,307 @@ def create_app(config: Config) -> FastAPI:
                 "message": f"Connection test failed: {str(e)}",
                 "details": str(e)
             }
+    
+    @app.get("/api/scheduler-runs")
+    async def get_scheduler_runs(
+        limit: int = 20,
+        user_info: Optional[Dict[str, any]] = Depends(get_current_user)
+    ):
+        """
+        Get recent scheduler run logs.
+        
+        Args:
+            limit: Maximum number of runs to retrieve (default: 20, max: 100)
+            
+        Returns:
+            List of recent scheduler runs with summary information
+        """
+        try:
+            # Validate limit
+            if limit > 100:
+                limit = 100
+            elif limit < 1:
+                limit = 20
+            
+            logger.info(f"Getting {limit} recent scheduler runs")
+            
+            # Get recent runs from logger
+            recent_runs = scheduler_run_logger.get_recent_runs(limit=limit)
+            
+            # Format runs for API response
+            runs_data = []
+            for run in recent_runs:
+                run_data = {
+                    "run_id": run.run_id,
+                    "start_time": run.start_time.isoformat(),
+                    "end_time": run.end_time.isoformat() if run.end_time else None,
+                    "status": run.status,
+                    "total_vessels": run.total_vessels,
+                    "successful_vessels": run.successful_vessels,
+                    "failed_vessels": run.failed_vessels,
+                    "retry_attempts": run.retry_attempts,
+                    "duration": {
+                        "seconds": run.duration.total_seconds() if run.duration else None,
+                        "formatted": _format_duration(run.duration) if run.duration else None
+                    },
+                    "error_message": run.error_message,
+                    "success_rate": round(
+                        (run.successful_vessels / max(run.total_vessels, 1)) * 100, 1
+                    ) if run.total_vessels > 0 else 0
+                }
+                runs_data.append(run_data)
+            
+            return {
+                "runs": runs_data,
+                "total_count": len(runs_data),
+                "limit": limit
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get scheduler runs: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get scheduler runs: {str(e)}")
+    
+    @app.get("/api/scheduler-runs/{run_id}")
+    async def get_scheduler_run_details(
+        run_id: str,
+        user_info: Optional[Dict[str, any]] = Depends(get_current_user)
+    ):
+        """
+        Get detailed information about a specific scheduler run.
+        
+        Args:
+            run_id: ID of the scheduler run
+            
+        Returns:
+            Detailed scheduler run information including vessel results
+        """
+        try:
+            logger.info(f"Getting details for scheduler run {run_id}")
+            
+            # Get run details from logger
+            run_details = scheduler_run_logger.get_run_details(run_id)
+            
+            if not run_details:
+                raise HTTPException(status_code=404, detail=f"Scheduler run {run_id} not found")
+            
+            # Format vessel results
+            vessel_results = []
+            for result in run_details.vessel_results:
+                result_data = {
+                    "vessel_id": result.vessel_id,
+                    "attempt_number": result.attempt_number,
+                    "success": result.success,
+                    "query_duration": {
+                        "seconds": result.query_duration.total_seconds(),
+                        "formatted": _format_duration(result.query_duration)
+                    },
+                    "error_message": result.error_message,
+                    "timestamp": result.timestamp.isoformat() if result.timestamp else None
+                }
+                vessel_results.append(result_data)
+            
+            # Get retry statistics
+            retry_stats = run_details.get_retry_statistics()
+            
+            # Format run summary
+            run_summary = run_details.run_summary
+            response_data = {
+                "run_summary": {
+                    "run_id": run_summary.run_id,
+                    "start_time": run_summary.start_time.isoformat(),
+                    "end_time": run_summary.end_time.isoformat() if run_summary.end_time else None,
+                    "status": run_summary.status,
+                    "total_vessels": run_summary.total_vessels,
+                    "successful_vessels": run_summary.successful_vessels,
+                    "failed_vessels": run_summary.failed_vessels,
+                    "retry_attempts": run_summary.retry_attempts,
+                    "duration": {
+                        "seconds": run_summary.duration.total_seconds() if run_summary.duration else None,
+                        "formatted": _format_duration(run_summary.duration) if run_summary.duration else None
+                    },
+                    "error_message": run_summary.error_message,
+                    "success_rate": round(
+                        (run_summary.successful_vessels / max(run_summary.total_vessels, 1)) * 100, 1
+                    ) if run_summary.total_vessels > 0 else 0
+                },
+                "vessel_results": vessel_results,
+                "retry_summary": run_details.retry_summary,
+                "retry_statistics": retry_stats,
+                "failed_vessels": run_details.get_failed_vessels()
+            }
+            
+            return response_data
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get scheduler run details for {run_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get run details: {str(e)}")
+    
+    @app.get("/api/scheduler-runs/statistics")
+    async def get_scheduler_statistics(
+        days_back: int = 30,
+        user_info: Optional[Dict[str, any]] = Depends(get_current_user)
+    ):
+        """
+        Get scheduler run statistics over a time period.
+        
+        Args:
+            days_back: Number of days to analyze (default: 30, max: 365)
+            
+        Returns:
+            Scheduler run statistics and vessel reliability information
+        """
+        try:
+            # Validate days_back
+            if days_back > 365:
+                days_back = 365
+            elif days_back < 1:
+                days_back = 30
+            
+            logger.info(f"Getting scheduler statistics for {days_back} days")
+            
+            # Get statistics from logger
+            statistics = scheduler_run_logger.get_run_statistics(days_back=days_back)
+            
+            return statistics
+            
+        except Exception as e:
+            logger.error(f"Failed to get scheduler statistics: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
+    
+    @app.get("/api/scheduler-runs/active")
+    async def get_active_scheduler_run(
+        user_info: Optional[Dict[str, any]] = Depends(get_current_user)
+    ):
+        """
+        Get the currently active (running) scheduler run if any.
+        
+        Returns:
+            Active scheduler run information or null if no active run
+        """
+        try:
+            logger.info("Getting active scheduler run")
+            
+            # Get active run from logger
+            active_run = scheduler_run_logger.get_active_run()
+            
+            if not active_run:
+                return {"active_run": None}
+            
+            # Format active run data
+            run_data = {
+                "run_id": active_run.run_id,
+                "start_time": active_run.start_time.isoformat(),
+                "status": active_run.status,
+                "total_vessels": active_run.total_vessels,
+                "successful_vessels": active_run.successful_vessels,
+                "failed_vessels": active_run.failed_vessels,
+                "retry_attempts": active_run.retry_attempts,
+                "elapsed_time": {
+                    "seconds": (datetime.utcnow() - active_run.start_time).total_seconds(),
+                    "formatted": _format_duration(datetime.utcnow() - active_run.start_time)
+                },
+                "progress_percentage": round(
+                    ((active_run.successful_vessels + active_run.failed_vessels) / max(active_run.total_vessels, 1)) * 100, 1
+                ) if active_run.total_vessels > 0 else 0
+            }
+            
+            return {"active_run": run_data}
+            
+        except Exception as e:
+            logger.error(f"Failed to get active scheduler run: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get active run: {str(e)}")
+    
+    @app.get("/api/fleet-sync-status")
+    async def get_fleet_sync_status(
+        force_refresh: bool = False,
+        user_info: Optional[Dict[str, any]] = Depends(get_current_user)
+    ):
+        """
+        Get fleet-wide data sync status breakdown.
+        
+        Args:
+            force_refresh: If True, bypass cache and collect fresh data
+            
+        Returns:
+            Fleet-wide sync status information with device-level details
+        """
+        try:
+            logger.info("Getting fleet sync status")
+            
+            # Get sync status from fleet dashboard
+            sync_status = await fleet_dashboard.get_fleet_sync_status(force_refresh=force_refresh)
+            
+            return sync_status
+            
+        except Exception as e:
+            logger.error(f"Failed to get fleet sync status: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get sync status: {str(e)}")
+    
+    @app.post("/api/scheduler/trigger")
+    async def trigger_scheduler_run(
+        user_info: Dict[str, any] = Depends(require_auth)
+    ):
+        """
+        Manually trigger a scheduler run for testing purposes.
+        
+        Returns:
+            Confirmation message and run details
+        """
+        try:
+            logger.info(f"Manual scheduler run triggered by user {user_info['user_id']}")
+            
+            # Check if scheduler is running
+            if not monitoring_scheduler.is_running:
+                monitoring_scheduler.start()
+            
+            # Trigger the daily monitoring job immediately
+            monitoring_scheduler.trigger_job_now("daily_monitoring")
+            
+            return {
+                "success": True,
+                "message": "Scheduler run triggered successfully",
+                "triggered_by": user_info['user_id'],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to trigger scheduler run: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to trigger scheduler: {str(e)}")
+    
+    @app.get("/api/scheduler/status")
+    async def get_scheduler_status(
+        user_info: Optional[Dict[str, any]] = Depends(get_current_user)
+    ):
+        """
+        Get current scheduler status and configuration.
+        
+        Returns:
+            Scheduler status information
+        """
+        try:
+            logger.info("Getting scheduler status")
+            
+            scheduler_stats = monitoring_scheduler.get_scheduler_stats()
+            active_run = scheduler_run_logger.get_active_run()
+            
+            return {
+                "scheduler": scheduler_stats,
+                "active_run": {
+                    "run_id": active_run.run_id,
+                    "start_time": active_run.start_time.isoformat(),
+                    "status": active_run.status,
+                    "total_vessels": active_run.total_vessels,
+                    "successful_vessels": active_run.successful_vessels,
+                    "failed_vessels": active_run.failed_vessels,
+                    "elapsed_time_seconds": (datetime.utcnow() - active_run.start_time).total_seconds()
+                } if active_run else None
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get scheduler status: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get scheduler status: {str(e)}")
     
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

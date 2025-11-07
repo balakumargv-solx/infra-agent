@@ -3,9 +3,12 @@ class FleetDashboard {
     constructor() {
         this.websocket = null;
         this.autoRefreshInterval = null;
+        this.schedulerLogsRefreshInterval = null;
+        this.lastSchedulerRefresh = null;
         this.isAutoRefreshEnabled = false;
         this.currentFilter = 'all';
         this.fleetData = null;
+        this.currentSchedulerRun = null;
         
         this.init();
     }
@@ -65,6 +68,15 @@ class FleetDashboard {
             case 'fleet_update':
                 this.updateDashboard(message.data);
                 break;
+            case 'scheduler_run_start':
+                this.handleSchedulerRunStart(message.data);
+                break;
+            case 'scheduler_run_progress':
+                this.handleSchedulerRunProgress(message.data);
+                break;
+            case 'scheduler_run_complete':
+                this.handleSchedulerRunComplete(message.data);
+                break;
             case 'pong':
                 // Keep-alive response
                 break;
@@ -74,6 +86,74 @@ class FleetDashboard {
             default:
                 console.log('Unknown message type:', message.type);
         }
+    }
+    
+    handleSchedulerRunStart(data) {
+        console.log('Scheduler run started:', data.run_id);
+        
+        // Show notification
+        this.showSchedulerRunNotification('Scheduler run started', 'info');
+        
+        // Update scheduler status in UI
+        this.updateSchedulerStatus('running', data);
+        
+        // Auto-refresh scheduler logs if modal is open
+        if (document.getElementById('scheduler-modal').style.display === 'block') {
+            this.autoRefreshSchedulerLogs();
+        }
+    }
+    
+    handleSchedulerRunProgress(data) {
+        console.log('Scheduler run progress:', data);
+        
+        // Update progress display
+        this.updateSchedulerProgress(data);
+        
+        // Auto-refresh scheduler logs if modal is open
+        if (document.getElementById('scheduler-modal').style.display === 'block') {
+            this.refreshSchedulerLogsIfNeeded();
+        }
+    }
+    
+    handleSchedulerRunComplete(data) {
+        console.log('Scheduler run completed:', data.run_id);
+        
+        const status = data.status === 'completed' ? 'success' : 'error';
+        const message = data.status === 'completed' 
+            ? `Scheduler run completed: ${data.successful_vessels}/${data.total_vessels} vessels successful`
+            : `Scheduler run failed: ${data.error_message || 'Unknown error'}`;
+        
+        this.showSchedulerRunNotification(message, status);
+        
+        // Update scheduler status in UI
+        this.updateSchedulerStatus('completed', data);
+        
+        // Auto-refresh scheduler logs
+        this.autoRefreshSchedulerLogs();
+        
+        // Refresh fleet data after scheduler run
+        setTimeout(() => {
+            this.loadInitialData();
+        }, 2000);
+    }
+    
+    showSchedulerRunNotification(message, type = 'info') {
+        // Simple notification system - could be enhanced with a proper toast library
+        const notification = document.createElement('div');
+        notification.className = `scheduler-notification ${type}`;
+        notification.innerHTML = `
+            <i class="fas fa-${type === 'success' ? 'check-circle' : type === 'warning' ? 'exclamation-triangle' : 'info-circle'}"></i>
+            <span>${message}</span>
+        `;
+        
+        document.body.appendChild(notification);
+        
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, 5000);
     }
     
     updateConnectionStatus(status) {
@@ -98,16 +178,21 @@ class FleetDashboard {
     async loadInitialData() {
         this.showLoading(true);
         try {
-            const response = await fetch('/api/fleet-overview');
-            if (response.ok) {
-                const data = await response.json();
+            // Load fleet data and scheduler status in parallel
+            const [fleetResponse, schedulerStatus] = await Promise.all([
+                fetch('/api/fleet-overview?include_devices=true'),
+                this.getSchedulerStatus()
+            ]);
+            
+            if (fleetResponse.ok) {
+                const data = await fleetResponse.json();
                 this.updateDashboard(data);
             } else {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                throw new Error(`HTTP ${fleetResponse.status}: ${fleetResponse.statusText}`);
             }
         } catch (error) {
             console.error('Failed to load initial data:', error);
-            this.showError('Failed to load fleet data. Please refresh the page.');
+            this.handleApiError(error, 'Loading fleet data');
         } finally {
             this.showLoading(false);
         }
@@ -173,17 +258,73 @@ class FleetDashboard {
         card.dataset.status = vessel.status;
         card.onclick = () => this.showVesselDetails(vessel.vessel_id);
         
-        // Calculate component status indicators
-        const componentsHtml = vessel.components ? 
-            vessel.components.map(comp => 
-                `<div class="component-indicator ${comp.current_status.toLowerCase()}">
-                    ${comp.type.toUpperCase()}<br>
-                    ${comp.uptime_percentage.toFixed(1)}%
-                </div>`
-            ).join('') :
-            `<div class="component-indicator ${vessel.components_up === vessel.components_total ? 'up' : 'down'}">
-                ${vessel.components_up}/${vessel.components_total} UP
-            </div>`;
+        // Calculate component status indicators or device summary
+        let statusIndicatorsHtml = '';
+        
+        if (vessel.devices && vessel.devices.length > 0) {
+            // Show device count summary with sync status breakdown
+            const syncStatusCounts = {
+                operational: 0,
+                no_data: 0,
+                sync_failed: 0,
+                confirmed_down: 0,
+                unknown: 0
+            };
+            
+            vessel.devices.forEach(device => {
+                const syncStatus = device.sync_status || 'unknown';
+                syncStatusCounts[syncStatus] = (syncStatusCounts[syncStatus] || 0) + 1;
+            });
+            
+            // Handle case where all devices have unknown sync status
+            const hasKnownStatus = Object.keys(syncStatusCounts).some(key => 
+                key !== 'unknown' && syncStatusCounts[key] > 0
+            );
+            
+            if (!hasKnownStatus && syncStatusCounts.unknown > 0) {
+                statusIndicatorsHtml = `
+                    <div class="device-summary">
+                        <div class="device-count">${vessel.devices.length} Devices</div>
+                        <div class="sync-status-indicators">
+                            <span class="sync-unknown" data-tooltip="Sync status information not available">
+                                ${syncStatusCounts.unknown} Unknown Status
+                            </span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                statusIndicatorsHtml = `
+                    <div class="device-summary">
+                        <div class="device-count">${vessel.devices.length} Devices</div>
+                        <div class="sync-status-indicators">
+                            ${syncStatusCounts.operational > 0 ? `<span class="sync-operational">${syncStatusCounts.operational} OK</span>` : ''}
+                            ${syncStatusCounts.no_data > 0 ? `<span class="sync-no-data">${syncStatusCounts.no_data} No Data</span>` : ''}
+                            ${syncStatusCounts.sync_failed > 0 ? `<span class="sync-sync-failed">${syncStatusCounts.sync_failed} Failed</span>` : ''}
+                            ${syncStatusCounts.confirmed_down > 0 ? `<span class="sync-confirmed-down">${syncStatusCounts.confirmed_down} Down</span>` : ''}
+                            ${syncStatusCounts.unknown > 0 ? `<span class="sync-unknown">${syncStatusCounts.unknown} Unknown</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+        } else {
+            // Fallback to component indicators
+            const componentsHtml = vessel.components ? 
+                vessel.components.map(comp => 
+                    `<div class="component-indicator ${comp.current_status.toLowerCase()}">
+                        ${comp.type.toUpperCase()}<br>
+                        ${comp.uptime_percentage.toFixed(1)}%
+                    </div>`
+                ).join('') :
+                `<div class="component-indicator ${vessel.components_up === vessel.components_total ? 'up' : 'down'}">
+                    ${vessel.components_up}/${vessel.components_total} UP
+                </div>`;
+            
+            statusIndicatorsHtml = `
+                <div class="component-indicators">
+                    ${componentsHtml}
+                </div>
+            `;
+        }
         
         card.innerHTML = `
             <div class="vessel-header">
@@ -206,10 +347,8 @@ class FleetDashboard {
                     </div>
                 </div>
                 <div class="components-status">
-                    <h4>Components</h4>
-                    <div class="component-indicators">
-                        ${componentsHtml}
-                    </div>
+                    <h4>${vessel.devices ? 'Device Status' : 'Components'}</h4>
+                    ${statusIndicatorsHtml}
                 </div>
             </div>
         `;
@@ -230,7 +369,7 @@ class FleetDashboard {
             this.displayVesselModal(vesselData);
         } catch (error) {
             console.error('Failed to load vessel details:', error);
-            this.showError(`Failed to load details for vessel ${vesselId}`);
+            this.handleApiError(error, `Loading vessel ${vesselId} details`);
         } finally {
             this.showLoading(false);
         }
@@ -242,6 +381,58 @@ class FleetDashboard {
         const content = document.getElementById('modal-vessel-content');
         
         title.textContent = `Vessel ${vesselData.vessel_id} - Details`;
+        
+        // Create individual device display with error handling
+        const devicesHtml = vesselData.devices && vesselData.devices.length > 0 ? `
+            <div class="device-list">
+                <h4><i class="fas fa-network-wired"></i> Individual Devices</h4>
+                ${vesselData.devices.map(device => {
+                    // Handle missing IP address data gracefully
+                    const ipAddress = device.ip_address || 'N/A';
+                    const ipClass = device.ip_address ? '' : 'missing-data';
+                    const ipTooltip = device.ip_address ? '' : 'data-tooltip="IP address not available"';
+                    
+                    // Handle missing metrics gracefully
+                    const uptime = device.uptime_percentage !== undefined ? device.uptime_percentage.toFixed(1) : 'N/A';
+                    const downtime = device.downtime_aging_hours !== undefined ? device.downtime_aging_hours.toFixed(1) : 'N/A';
+                    const componentType = device.component_type || 'Unknown';
+                    const syncStatus = device.sync_status || 'unknown';
+                    
+                    return `
+                        <div class="device-item">
+                            <div class="device-info">
+                                <div class="device-ip ${ipClass}" ${ipTooltip}>${ipAddress}</div>
+                                <div class="device-type">${componentType}</div>
+                            </div>
+                            <div class="device-metrics">
+                                <div class="device-metric">
+                                    <div class="device-metric-value ${uptime === 'N/A' ? 'missing-data' : ''}">${uptime}${uptime !== 'N/A' ? '%' : ''}</div>
+                                    <div class="device-metric-label">Uptime</div>
+                                </div>
+                                <div class="device-metric">
+                                    <div class="device-metric-value ${downtime === 'N/A' ? 'missing-data' : ''}">${downtime}${downtime !== 'N/A' ? 'h' : ''}</div>
+                                    <div class="device-metric-label">Downtime</div>
+                                </div>
+                                <div class="device-metric">
+                                    <span class="sync-${syncStatus.replace('_', '-')} status-tooltip" 
+                                          data-tooltip="${this.getSyncStatusTooltip(syncStatus)}">
+                                        ${this.formatSyncStatus(syncStatus)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        ` : `
+            <div class="device-list">
+                <h4><i class="fas fa-network-wired"></i> Individual Devices</h4>
+                <div class="no-devices-message">
+                    <i class="fas fa-info-circle"></i>
+                    <span>No device data available for this vessel</span>
+                </div>
+            </div>
+        `;
         
         const componentsHtml = vesselData.components.map(comp => `
             <div class="component-detail ${comp.highlight_class || ''}">
@@ -294,6 +485,7 @@ class FleetDashboard {
                     <span class="detail-value">${this.formatDateTime(vesselData.timestamp)}</span>
                 </div>
             </div>
+            ${devicesHtml}
             <h3>Component Details</h3>
             ${componentsHtml}
             ${vesselData.violations && vesselData.violations.length > 0 ? `
@@ -323,6 +515,28 @@ class FleetDashboard {
         return icons[componentType] || 'question-circle';
     }
     
+    formatSyncStatus(syncStatus) {
+        const statusLabels = {
+            'operational': 'Operational',
+            'no_data': 'No Data',
+            'sync_failed': 'Sync Failed',
+            'confirmed_down': 'Confirmed Down',
+            'unknown': 'Unknown'
+        };
+        return statusLabels[syncStatus] || 'Unknown';
+    }
+    
+    getSyncStatusTooltip(syncStatus) {
+        const tooltips = {
+            'operational': 'Device is operational with good data synchronization',
+            'no_data': 'No recent data synchronization - could be new device or sync issue',
+            'sync_failed': 'Device has data but poor performance indicates sync issues',
+            'confirmed_down': 'Device is confirmed down based on operational status',
+            'unknown': 'Sync status information is not available'
+        };
+        return tooltips[syncStatus] || 'Unknown sync status';
+    }
+    
     async showViolations() {
         try {
             this.showLoading(true);
@@ -336,9 +550,89 @@ class FleetDashboard {
             this.displayViolationsModal(violationsData);
         } catch (error) {
             console.error('Failed to load violations:', error);
-            this.showError('Failed to load SLA violations');
+            this.handleApiError(error, 'Loading SLA violations');
         } finally {
             this.showLoading(false);
+        }
+    }
+    
+    async showSchedulerLogs() {
+        try {
+            this.showLoading(true);
+            const response = await fetch('/api/scheduler-runs?limit=20');
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const schedulerData = await response.json();
+            this.displaySchedulerModal(schedulerData);
+            
+            // Start auto-refresh for scheduler logs
+            this.startSchedulerLogsAutoRefresh();
+        } catch (error) {
+            console.error('Failed to load scheduler logs:', error);
+            this.handleApiError(error, 'Loading scheduler run logs');
+        } finally {
+            this.showLoading(false);
+        }
+    }
+    
+    async refreshSchedulerLogs() {
+        try {
+            const response = await fetch('/api/scheduler-runs?limit=20');
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const schedulerData = await response.json();
+            
+            // Only update if modal is still open
+            if (document.getElementById('scheduler-modal').style.display === 'block') {
+                this.displaySchedulerModal(schedulerData);
+            }
+        } catch (error) {
+            console.error('Failed to refresh scheduler logs:', error);
+            
+            // Show error in scheduler modal if it's open
+            if (document.getElementById('scheduler-modal').style.display === 'block') {
+                this.displaySchedulerLogError('Failed to refresh scheduler logs. Please try again.');
+            }
+        }
+    }
+    
+    startSchedulerLogsAutoRefresh() {
+        // Clear any existing interval
+        if (this.schedulerLogsRefreshInterval) {
+            clearInterval(this.schedulerLogsRefreshInterval);
+        }
+        
+        // Start auto-refresh every 5 seconds while modal is open
+        this.schedulerLogsRefreshInterval = setInterval(() => {
+            if (document.getElementById('scheduler-modal').style.display === 'block') {
+                this.refreshSchedulerLogs();
+            } else {
+                // Stop auto-refresh if modal is closed
+                clearInterval(this.schedulerLogsRefreshInterval);
+                this.schedulerLogsRefreshInterval = null;
+            }
+        }, 5000);
+    }
+    
+    autoRefreshSchedulerLogs() {
+        // Refresh immediately and start auto-refresh
+        setTimeout(() => {
+            this.refreshSchedulerLogs();
+        }, 1000);
+    }
+    
+    refreshSchedulerLogsIfNeeded() {
+        // Throttled refresh - only refresh if last refresh was more than 2 seconds ago
+        const now = Date.now();
+        if (!this.lastSchedulerRefresh || (now - this.lastSchedulerRefresh) > 2000) {
+            this.lastSchedulerRefresh = now;
+            this.refreshSchedulerLogs();
         }
     }
     
@@ -394,6 +688,242 @@ class FleetDashboard {
         modal.style.display = 'block';
     }
     
+    displaySchedulerModal(schedulerData) {
+        const modal = document.getElementById('scheduler-modal');
+        const content = document.getElementById('scheduler-modal-content');
+        
+        // Handle case where schedulerData is null or invalid
+        if (!schedulerData || !schedulerData.runs) {
+            this.displaySchedulerLogError('Invalid scheduler data received');
+            return;
+        }
+        
+        if (schedulerData.runs.length === 0) {
+            content.innerHTML = `
+                <div class="no-violations">
+                    <i class="fas fa-clock" style="font-size: 3rem; color: #6b7280; margin-bottom: 20px;"></i>
+                    <h3>No Scheduler Runs</h3>
+                    <p>No scheduler execution history available.</p>
+                    <button class="btn btn-primary" onclick="triggerSchedulerRun()" style="margin-top: 15px;">
+                        <i class="fas fa-play"></i> Trigger Manual Run
+                    </button>
+                </div>
+            `;
+        } else {
+            const runsHtml = schedulerData.runs.map(run => {
+                // Handle partial run data gracefully
+                const runId = run.run_id || 'Unknown';
+                const status = run.status || 'unknown';
+                const totalVessels = run.total_vessels !== undefined ? run.total_vessels : 'N/A';
+                const successfulVessels = run.successful_vessels !== undefined ? run.successful_vessels : 'N/A';
+                const failedVessels = run.failed_vessels !== undefined ? run.failed_vessels : 'N/A';
+                const successRate = run.success_rate !== undefined ? run.success_rate : 'N/A';
+                const duration = run.duration && run.duration.formatted ? run.duration.formatted : 'N/A';
+                const startTime = run.start_time ? this.formatDateTime(run.start_time) : 'N/A';
+                const endTime = run.end_time ? this.formatDateTime(run.end_time) : null;
+                
+                return `
+                    <div class="scheduler-run-item ${runId === 'Unknown' ? 'partial-data' : ''}" onclick="dashboard.showSchedulerRunDetails('${runId}')">
+                        <div class="scheduler-run-header">
+                            <div class="scheduler-run-id">Run ${runId.substring(0, 8)}...</div>
+                            <div class="scheduler-run-status ${status}">${status.toUpperCase()}</div>
+                        </div>
+                        <div class="scheduler-run-metrics">
+                            <div class="scheduler-run-metric">
+                                <div class="scheduler-run-metric-value ${totalVessels === 'N/A' ? 'missing-data' : ''}">${totalVessels}</div>
+                                <div class="scheduler-run-metric-label">Total Vessels</div>
+                            </div>
+                            <div class="scheduler-run-metric">
+                                <div class="scheduler-run-metric-value ${successfulVessels === 'N/A' ? 'missing-data' : ''}">${successfulVessels}</div>
+                                <div class="scheduler-run-metric-label">Successful</div>
+                            </div>
+                            <div class="scheduler-run-metric">
+                                <div class="scheduler-run-metric-value ${failedVessels === 'N/A' ? 'missing-data' : ''}">${failedVessels}</div>
+                                <div class="scheduler-run-metric-label">Failed</div>
+                            </div>
+                            <div class="scheduler-run-metric">
+                                <div class="scheduler-run-metric-value ${successRate === 'N/A' ? 'missing-data' : ''}">${successRate}${successRate !== 'N/A' ? '%' : ''}</div>
+                                <div class="scheduler-run-metric-label">Success Rate</div>
+                            </div>
+                            <div class="scheduler-run-metric">
+                                <div class="scheduler-run-metric-value ${duration === 'N/A' ? 'missing-data' : ''}">${duration}</div>
+                                <div class="scheduler-run-metric-label">Duration</div>
+                            </div>
+                        </div>
+                        <div class="scheduler-run-time">
+                            Started: ${startTime}
+                            ${endTime ? ` | Completed: ${endTime}` : ''}
+                        </div>
+                        ${runId === 'Unknown' ? '<div class="partial-data-warning"><i class="fas fa-exclamation-triangle"></i> Partial data</div>' : ''}
+                    </div>
+                `;
+            }).join('');
+            
+            content.innerHTML = `
+                <div class="scheduler-runs-list">
+                    ${runsHtml}
+                </div>
+                <div class="scheduler-actions" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e5e7eb;">
+                    <button class="btn btn-primary" onclick="triggerSchedulerRun()">
+                        <i class="fas fa-play"></i> Trigger Manual Run
+                    </button>
+                    <button class="btn btn-secondary" onclick="dashboard.refreshSchedulerLogs()">
+                        <i class="fas fa-sync"></i> Refresh
+                    </button>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.9rem; color: #6b7280;">
+                    <p><strong>Total Runs:</strong> ${schedulerData.total_count || 'N/A'}</p>
+                    <p>Click on a run to view detailed information</p>
+                </div>
+            `;
+        }
+        
+        modal.style.display = 'block';
+    }
+    
+    displaySchedulerLogError(message) {
+        const modal = document.getElementById('scheduler-modal');
+        const content = document.getElementById('scheduler-modal-content');
+        
+        content.innerHTML = `
+            <div class="scheduler-error">
+                <i class="fas fa-exclamation-triangle" style="font-size: 3rem; color: #dc2626; margin-bottom: 20px;"></i>
+                <h3>Scheduler Log Error</h3>
+                <p>${message}</p>
+                <div class="error-actions" style="margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="dashboard.refreshSchedulerLogs()">
+                        <i class="fas fa-sync"></i> Retry
+                    </button>
+                    <button class="btn btn-secondary" onclick="dashboard.closeSchedulerModal()">
+                        <i class="fas fa-times"></i> Close
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        modal.style.display = 'block';
+    }
+    
+    async showSchedulerRunDetails(runId) {
+        try {
+            this.showLoading(true);
+            const response = await fetch(`/api/scheduler-runs/${runId}`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const runDetails = await response.json();
+            this.displaySchedulerRunDetailsModal(runDetails);
+        } catch (error) {
+            console.error('Failed to load scheduler run details:', error);
+            this.handleApiError(error, 'Loading scheduler run details');
+        } finally {
+            this.showLoading(false);
+        }
+    }
+    
+    displaySchedulerRunDetailsModal(runDetails) {
+        const modal = document.getElementById('scheduler-modal');
+        const content = document.getElementById('scheduler-modal-content');
+        
+        const run = runDetails.run_summary;
+        const vesselResults = runDetails.vessel_results;
+        
+        // Group vessel results by vessel ID and attempt
+        const vesselGroups = {};
+        vesselResults.forEach(result => {
+            if (!vesselGroups[result.vessel_id]) {
+                vesselGroups[result.vessel_id] = [];
+            }
+            vesselGroups[result.vessel_id].push(result);
+        });
+        
+        const vesselResultsHtml = Object.entries(vesselGroups).map(([vesselId, results]) => {
+            const finalResult = results[results.length - 1]; // Last attempt
+            const attempts = results.length;
+            
+            return `
+                <div class="scheduler-vessel-result">
+                    <div class="vessel-result-header">
+                        <span class="vessel-id">${vesselId}</span>
+                        <span class="vessel-result-status ${finalResult.success ? 'success' : 'failed'}">
+                            ${finalResult.success ? 'SUCCESS' : 'FAILED'}
+                        </span>
+                        ${attempts > 1 ? `<span class="retry-count">${attempts} attempts</span>` : ''}
+                    </div>
+                    ${!finalResult.success && finalResult.error_message ? `
+                        <div class="vessel-error-message">${finalResult.error_message}</div>
+                    ` : ''}
+                    <div class="vessel-result-time">
+                        Duration: ${finalResult.query_duration.formatted}
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        content.innerHTML = `
+            <div class="scheduler-run-details">
+                <div class="run-summary">
+                    <h3>Run Summary</h3>
+                    <div class="run-summary-grid">
+                        <div class="summary-item">
+                            <span class="summary-label">Run ID:</span>
+                            <span class="summary-value">${run.run_id}</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Status:</span>
+                            <span class="summary-value scheduler-run-status ${run.status}">${run.status.toUpperCase()}</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Duration:</span>
+                            <span class="summary-value">${run.duration.formatted || 'N/A'}</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Success Rate:</span>
+                            <span class="summary-value">${run.success_rate}%</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Total Vessels:</span>
+                            <span class="summary-value">${run.total_vessels}</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Successful:</span>
+                            <span class="summary-value text-green">${run.successful_vessels}</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Failed:</span>
+                            <span class="summary-value text-red">${run.failed_vessels}</span>
+                        </div>
+                        <div class="summary-item">
+                            <span class="summary-label">Retry Attempts:</span>
+                            <span class="summary-value">${run.retry_attempts}</span>
+                        </div>
+                    </div>
+                    <div class="run-times">
+                        <p><strong>Started:</strong> ${this.formatDateTime(run.start_time)}</p>
+                        ${run.end_time ? `<p><strong>Completed:</strong> ${this.formatDateTime(run.end_time)}</p>` : ''}
+                    </div>
+                </div>
+                
+                <div class="vessel-results">
+                    <h3>Vessel Results</h3>
+                    <div class="vessel-results-list">
+                        ${vesselResultsHtml}
+                    </div>
+                </div>
+                
+                <div class="run-actions">
+                    <button class="btn btn-secondary" onclick="dashboard.showSchedulerLogs()">
+                        <i class="fas fa-arrow-left"></i> Back to Runs
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        modal.style.display = 'block';
+    }
+    
     filterVessels() {
         const filter = document.getElementById('status-filter').value;
         const vesselCards = document.querySelectorAll('.vessel-card');
@@ -445,9 +975,55 @@ class FleetDashboard {
         overlay.style.display = show ? 'flex' : 'none';
     }
     
-    showError(message) {
-        // Simple error display - could be enhanced with a proper notification system
-        alert(message);
+    showError(message, details = null) {
+        // Enhanced error display with optional details
+        console.error('Dashboard error:', message, details);
+        
+        // Create error notification
+        const notification = document.createElement('div');
+        notification.className = 'scheduler-notification error';
+        notification.innerHTML = `
+            <i class="fas fa-exclamation-circle"></i>
+            <div class="notification-content">
+                <div class="notification-message">${message}</div>
+                ${details ? `<div class="notification-details">${details}</div>` : ''}
+            </div>
+            <button class="notification-close" onclick="this.parentNode.remove()">×</button>
+        `;
+        
+        document.body.appendChild(notification);
+        
+        // Auto-remove after 10 seconds for errors
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, 10000);
+    }
+    
+    handleApiError(error, context = 'API request') {
+        let message = `${context} failed`;
+        let details = null;
+        
+        if (error.message) {
+            if (error.message.includes('HTTP 401')) {
+                message = 'Authentication required';
+                details = 'Please log in to continue';
+            } else if (error.message.includes('HTTP 403')) {
+                message = 'Access denied';
+                details = 'You do not have permission to perform this action';
+            } else if (error.message.includes('HTTP 404')) {
+                message = 'Resource not found';
+                details = 'The requested resource could not be found';
+            } else if (error.message.includes('HTTP 500')) {
+                message = 'Server error';
+                details = 'An internal server error occurred. Please try again later.';
+            } else {
+                details = error.message;
+            }
+        }
+        
+        this.showError(message, details);
     }
     
     updateLastUpdated(timestamp) {
@@ -467,12 +1043,16 @@ class FleetDashboard {
         window.onclick = (event) => {
             const vesselModal = document.getElementById('vessel-modal');
             const violationsModal = document.getElementById('violations-modal');
+            const schedulerModal = document.getElementById('scheduler-modal');
             
             if (event.target === vesselModal) {
                 vesselModal.style.display = 'none';
             }
             if (event.target === violationsModal) {
                 violationsModal.style.display = 'none';
+            }
+            if (event.target === schedulerModal) {
+                schedulerModal.style.display = 'none';
             }
         };
         
@@ -481,6 +1061,7 @@ class FleetDashboard {
             if (event.key === 'Escape') {
                 this.closeModal();
                 this.closeViolationsModal();
+                this.closeSchedulerModal();
             }
             if (event.key === 'r' && event.ctrlKey) {
                 event.preventDefault();
@@ -495,6 +1076,115 @@ class FleetDashboard {
     
     closeViolationsModal() {
         document.getElementById('violations-modal').style.display = 'none';
+    }
+    
+    closeSchedulerModal() {
+        document.getElementById('scheduler-modal').style.display = 'none';
+        
+        // Stop auto-refresh when modal is closed
+        if (this.schedulerLogsRefreshInterval) {
+            clearInterval(this.schedulerLogsRefreshInterval);
+            this.schedulerLogsRefreshInterval = null;
+        }
+    }
+    
+    updateSchedulerStatus(status, data) {
+        // Update scheduler status indicator in the UI
+        const statusElement = document.getElementById('scheduler-status');
+        if (statusElement) {
+            statusElement.className = `scheduler-status ${status}`;
+            
+            let statusText = '';
+            switch (status) {
+                case 'running':
+                    statusText = `Running (${data.run_id.substring(0, 8)}...)`;
+                    this.currentSchedulerRun = data;
+                    break;
+                case 'completed':
+                    statusText = data.status === 'completed' ? 'Completed' : 'Failed';
+                    this.currentSchedulerRun = null;
+                    break;
+                default:
+                    statusText = 'Idle';
+                    this.currentSchedulerRun = null;
+            }
+            
+            const statusTextElement = statusElement.querySelector('.status-text');
+            if (statusTextElement) {
+                statusTextElement.textContent = statusText;
+            }
+        }
+    }
+    
+    updateSchedulerProgress(data) {
+        // Update progress display if available
+        const progressElement = document.getElementById('scheduler-progress');
+        if (progressElement && this.currentSchedulerRun) {
+            const progressBar = progressElement.querySelector('.progress-bar');
+            const progressText = progressElement.querySelector('.progress-text');
+            
+            if (progressBar) {
+                progressBar.style.width = `${data.progress_percentage}%`;
+            }
+            
+            if (progressText) {
+                progressText.textContent = `${data.successful_vessels + data.failed_vessels}/${data.total_vessels} vessels processed`;
+            }
+            
+            // Show progress element
+            progressElement.style.display = 'block';
+        }
+    }
+    
+    async triggerSchedulerRun() {
+        try {
+            this.showLoading(true);
+            const response = await fetch('/api/scheduler/trigger', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            this.showSchedulerRunNotification('Scheduler run triggered successfully', 'success');
+            
+            return result;
+        } catch (error) {
+            console.error('Failed to trigger scheduler run:', error);
+            this.handleApiError(error, 'Triggering scheduler run');
+            throw error;
+        } finally {
+            this.showLoading(false);
+        }
+    }
+    
+    async getSchedulerStatus() {
+        try {
+            const response = await fetch('/api/scheduler/status');
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const status = await response.json();
+            
+            // Update UI with scheduler status
+            if (status.active_run) {
+                this.updateSchedulerStatus('running', status.active_run);
+            } else {
+                this.updateSchedulerStatus('idle', null);
+            }
+            
+            return status;
+        } catch (error) {
+            console.error('Failed to get scheduler status:', error);
+            return null;
+        }
     }
 }
 
@@ -515,6 +1205,10 @@ function showViolations() {
     dashboard.showViolations();
 }
 
+function showSchedulerLogs() {
+    dashboard.showSchedulerLogs();
+}
+
 function closeModal() {
     dashboard.closeModal();
 }
@@ -523,13 +1217,25 @@ function closeViolationsModal() {
     dashboard.closeViolationsModal();
 }
 
+function closeSchedulerModal() {
+    dashboard.closeSchedulerModal();
+}
+
+function triggerSchedulerRun() {
+    dashboard.triggerSchedulerRun();
+}
+
+function getSchedulerStatus() {
+    return dashboard.getSchedulerStatus();
+}
+
 // Initialize dashboard when page loads
 let dashboard;
 document.addEventListener('DOMContentLoaded', () => {
     dashboard = new FleetDashboard();
 });
 
-// Add some additional CSS classes for text colors
+// Add additional CSS classes for error handling and missing data
 const style = document.createElement('style');
 style.textContent = `
     .text-green { color: #16a34a; }
@@ -550,6 +1256,172 @@ style.textContent = `
         margin: 5px 0;
         border-radius: 6px;
         border-left: 4px solid;
+    }
+    
+    /* Error handling styles */
+    .missing-data {
+        color: #9ca3af !important;
+        font-style: italic;
+    }
+    
+    .partial-data {
+        border-left: 3px solid #f59e0b;
+        background-color: #fffbeb;
+    }
+    
+    .partial-data-warning {
+        font-size: 0.8rem;
+        color: #f59e0b;
+        margin-top: 5px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+    }
+    
+    .scheduler-error {
+        text-align: center;
+        padding: 40px;
+        color: #6b7280;
+    }
+    
+    .error-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+    }
+    
+    .no-devices-message {
+        text-align: center;
+        padding: 20px;
+        color: #6b7280;
+        background-color: #f9fafb;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+    }
+    
+    .sync-unknown {
+        background-color: #f3f4f6;
+        color: #6b7280;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.8rem;
+    }
+    
+    .scheduler-notification {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        max-width: 400px;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        z-index: 10000;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        animation: slideIn 0.3s ease-out;
+    }
+    
+    .scheduler-notification.success {
+        background-color: #f0fdf4;
+        border-left: 4px solid #16a34a;
+        color: #166534;
+    }
+    
+    .scheduler-notification.error {
+        background-color: #fef2f2;
+        border-left: 4px solid #dc2626;
+        color: #991b1b;
+    }
+    
+    .scheduler-notification.warning {
+        background-color: #fffbeb;
+        border-left: 4px solid #f59e0b;
+        color: #92400e;
+    }
+    
+    .scheduler-notification.info {
+        background-color: #eff6ff;
+        border-left: 4px solid #3b82f6;
+        color: #1e40af;
+    }
+    
+    .notification-content {
+        flex: 1;
+    }
+    
+    .notification-message {
+        font-weight: 500;
+        margin-bottom: 4px;
+    }
+    
+    .notification-details {
+        font-size: 0.9rem;
+        opacity: 0.8;
+    }
+    
+    .notification-close {
+        background: none;
+        border: none;
+        font-size: 1.2rem;
+        cursor: pointer;
+        opacity: 0.6;
+        padding: 0;
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .notification-close:hover {
+        opacity: 1;
+    }
+    
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    .status-tooltip[data-tooltip] {
+        position: relative;
+        cursor: help;
+    }
+    
+    .status-tooltip[data-tooltip]:hover::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: #1f2937;
+        color: white;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        white-space: nowrap;
+        z-index: 1000;
+        margin-bottom: 5px;
+    }
+    
+    .status-tooltip[data-tooltip]:hover::before {
+        content: '';
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 5px solid transparent;
+        border-top-color: #1f2937;
+        z-index: 1000;
     }
 `;
 document.head.appendChild(style);

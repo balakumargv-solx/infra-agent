@@ -625,6 +625,479 @@ select {
     color: #6b7280;
 }
 
+/* Individual Device Display */
+.device-list {
+    margin-top: 20px;
+}
+
+.device-list h4 {
+    margin-bottom: 15px;
+    color: #374151;
+    font-size: 1.1rem;
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 8px;
+}
+
+/* Device Summary in Vessel Cards */
+.device-summary {
+    text-align: center;
+}
+
+.device-count {
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #374151;
+}
+
+.sync-status-indicators {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    justify-content: center;
+}
+
+.sync-status-indicators span {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 8px;
+    font-weight: 600;
+}
+
+.device-item {
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.device-info {
+    flex: 1;
+}
+
+.device-ip {
+    font-weight: 600;
+    font-size: 1rem;
+    color: #374151;
+    margin-bottom: 5px;
+}
+
+.device-type {
+    font-size: 0.9rem;
+    color: #6b7280;
+    text-transform: uppercase;
+}
+
+.device-metrics {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+}
+
+.device-metric {
+    text-align: center;
+}
+
+.device-metric-value {
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 2px;
+}
+
+.device-metric-label {
+    font-size: 0.8rem;
+    color: #6b7280;
+}
+
+/* Data Sync Status Classes */
+.sync-operational {
+    background: #dcfce7;
+    color: #16a34a;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.sync-no-data {
+    background: #fef3c7;
+    color: #d97706;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.sync-sync-failed {
+    background: #fee2e2;
+    color: #dc2626;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.sync-confirmed-down {
+    background: #f3f4f6;
+    color: #6b7280;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+/* Scheduler Run Log Styles */
+.scheduler-runs-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.scheduler-run-item {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.scheduler-run-item:hover {
+    background: #f8fafc;
+    border-color: #d1d5db;
+}
+
+.scheduler-run-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.scheduler-run-id {
+    font-weight: 600;
+    color: #374151;
+}
+
+.scheduler-run-status {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.scheduler-run-status.completed {
+    background: #dcfce7;
+    color: #16a34a;
+}
+
+.scheduler-run-status.failed {
+    background: #fee2e2;
+    color: #dc2626;
+}
+
+.scheduler-run-status.running {
+    background: #dbeafe;
+    color: #2563eb;
+}
+
+.scheduler-run-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 15px;
+    font-size: 0.9rem;
+}
+
+.scheduler-run-metric {
+    text-align: center;
+}
+
+.scheduler-run-metric-value {
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.scheduler-run-metric-label {
+    color: #6b7280;
+    font-size: 0.8rem;
+}
+
+.scheduler-run-time {
+    font-size: 0.8rem;
+    color: #6b7280;
+    margin-top: 8px;
+}
+
+/* Status Tooltips */
+.status-tooltip {
+    position: relative;
+    cursor: help;
+}
+
+.status-tooltip:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #374151;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    z-index: 1000;
+    margin-bottom: 5px;
+}
+
+.status-tooltip:hover::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #374151;
+    z-index: 1000;
+}
+
+/* Enhanced Modal Styles */
+.modal-tabs {
+    display: flex;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 20px;
+}
+
+.modal-tab {
+    padding: 10px 20px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    color: #6b7280;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+}
+
+.modal-tab.active {
+    color: #3b82f6;
+    border-bottom-color: #3b82f6;
+}
+
+.modal-tab:hover {
+    color: #374151;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* Scheduler Run Details */
+.scheduler-run-details {
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.run-summary {
+    background: #f8fafc;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+
+.run-summary h3 {
+    margin-bottom: 15px;
+    color: #374151;
+}
+
+.run-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.summary-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.summary-label {
+    font-weight: 500;
+    color: #6b7280;
+}
+
+.summary-value {
+    font-weight: 600;
+}
+
+.run-times {
+    font-size: 0.9rem;
+    color: #6b7280;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 15px;
+}
+
+.vessel-results {
+    margin-bottom: 20px;
+}
+
+.vessel-results h3 {
+    margin-bottom: 15px;
+    color: #374151;
+}
+
+.vessel-results-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.scheduler-vessel-result {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 8px;
+}
+
+.vessel-result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.vessel-id {
+    font-weight: 600;
+    color: #374151;
+}
+
+.vessel-result-status {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.vessel-result-status.success {
+    background: #dcfce7;
+    color: #16a34a;
+}
+
+.vessel-result-status.failed {
+    background: #fee2e2;
+    color: #dc2626;
+}
+
+.retry-count {
+    font-size: 0.8rem;
+    color: #6b7280;
+    background: #f3f4f6;
+    padding: 2px 6px;
+    border-radius: 8px;
+}
+
+.vessel-error-message {
+    background: #fef2f2;
+    color: #dc2626;
+    padding: 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    margin-bottom: 8px;
+}
+
+.vessel-result-time {
+    font-size: 0.8rem;
+    color: #6b7280;
+}
+
+.run-actions {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 15px;
+    text-align: center;
+}
+
+/* Loading States */
+.loading-spinner-small {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #e5e7eb;
+    border-radius: 50%;
+    border-top-color: #3b82f6;
+    animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Scheduler Notifications */
+.scheduler-notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 15px 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    z-index: 1001;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 400px;
+    animation: slideInRight 0.3s ease-out;
+}
+
+.scheduler-notification.success {
+    border-left: 4px solid #16a34a;
+    background: #f0fdf4;
+}
+
+.scheduler-notification.success i {
+    color: #16a34a;
+}
+
+.scheduler-notification.warning {
+    border-left: 4px solid #f59e0b;
+    background: #fffbeb;
+}
+
+.scheduler-notification.warning i {
+    color: #f59e0b;
+}
+
+.scheduler-notification.info {
+    border-left: 4px solid #3b82f6;
+    background: #eff6ff;
+}
+
+.scheduler-notification.info i {
+    color: #3b82f6;
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
 /* Animations */
 @keyframes fadeIn {
     from { opacity: 0; }

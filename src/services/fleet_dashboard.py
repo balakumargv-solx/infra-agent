@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..config.config_models import Config
-from ..models.data_models import VesselMetrics, SLAStatus, ComponentStatus
+from ..models.data_models import VesselMetrics, SLAStatus, ComponentStatus, DeviceStatus
 from ..models.enums import ComponentType, OperationalStatus
 from ..services.data_collector import DataCollector
 from ..services.sla_analyzer import SLAAnalyzer, SLAViolation
@@ -55,6 +55,20 @@ class FleetOverview:
 
 
 @dataclass
+class DeviceDetail:
+    """Individual device information for vessel display"""
+    
+    ip_address: str
+    component_type: ComponentType
+    uptime_percentage: float
+    current_status: OperationalStatus
+    downtime_aging_hours: float
+    last_ping_time: datetime
+    has_data: bool
+    sync_status: str  # 'operational', 'no_data', 'sync_failed', 'confirmed_down'
+
+
+@dataclass
 class VesselSummary:
     """Summary data for a single vessel"""
     
@@ -66,6 +80,7 @@ class VesselSummary:
     components_total: int
     worst_component_uptime: float
     last_updated: datetime
+    devices: Optional[List[DeviceDetail]] = None  # Individual device details when requested
 
 
 @dataclass
@@ -92,6 +107,7 @@ class VesselDetail:
     components: List[ComponentDetail]
     violations: List[Dict[str, Any]]
     last_updated: datetime
+    devices: List[DeviceDetail]  # Individual device details
 
 
 class FleetDashboard:
@@ -182,12 +198,13 @@ class FleetDashboard:
             last_updated=datetime.utcnow()
         )
     
-    async def get_vessel_summaries(self, force_refresh: bool = False) -> Dict[str, VesselSummary]:
+    async def get_vessel_summaries(self, force_refresh: bool = False, include_devices: bool = False) -> Dict[str, VesselSummary]:
         """
         Get summary information for all vessels.
         
         Args:
             force_refresh: If True, bypass cache and collect fresh data
+            include_devices: If True, include individual device details with IP addresses
             
         Returns:
             Dictionary mapping vessel IDs to their summary information
@@ -197,7 +214,7 @@ class FleetDashboard:
         # Get fleet data (cached or fresh)
         fleet_metrics, fleet_sla_statuses = await self._get_fleet_data(force_refresh)
         
-        return self._calculate_vessel_statuses(fleet_metrics, fleet_sla_statuses)
+        return self._calculate_vessel_statuses(fleet_metrics, fleet_sla_statuses, include_devices)
     
     async def get_vessel_details(self, vessel_id: str, force_refresh: bool = False) -> VesselDetail:
         """
@@ -270,13 +287,17 @@ class FleetDashboard:
                 }
                 violations.append(violation_data)
         
+        # Extract individual device details
+        devices = self._extract_device_details(vessel_metrics)
+        
         return VesselDetail(
             vessel_id=vessel_id,
             overall_status=overall_status,
             compliance_rate=compliance_rate,
             components=components,
             violations=violations,
-            last_updated=vessel_metrics.timestamp
+            last_updated=vessel_metrics.timestamp,
+            devices=devices
         )
     
     async def get_sla_violations(
@@ -408,6 +429,60 @@ class FleetDashboard:
         
         return enhanced_breakdown
     
+    async def get_fleet_sync_status(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """
+        Get fleet-wide data sync status breakdown.
+        
+        Args:
+            force_refresh: If True, bypass cache and collect fresh data
+            
+        Returns:
+            Fleet-wide sync status information
+        """
+        logger.info("Getting fleet sync status")
+        
+        # Get fleet data (cached or fresh)
+        fleet_metrics, fleet_sla_statuses = await self._get_fleet_data(force_refresh)
+        
+        fleet_sync_summary = {
+            "operational": 0,
+            "no_data": 0,
+            "sync_failed": 0,
+            "confirmed_down": 0
+        }
+        
+        vessel_sync_summaries = {}
+        total_devices = 0
+        
+        for vessel_id, vessel_metrics in fleet_metrics.items():
+            vessel_sync_summary = self.get_sync_status_summary(vessel_metrics)
+            vessel_sync_summaries[vessel_id] = vessel_sync_summary
+            
+            # Add to fleet totals
+            for status, count in vessel_sync_summary["status_counts"].items():
+                fleet_sync_summary[status] += count
+            total_devices += vessel_sync_summary["total_devices"]
+        
+        # Calculate fleet percentages
+        fleet_percentages = {
+            status: round((count / max(total_devices, 1)) * 100, 1)
+            for status, count in fleet_sync_summary.items()
+        }
+        
+        # Calculate overall fleet sync health
+        fleet_health = self._calculate_sync_health(fleet_sync_summary, total_devices)
+        
+        return {
+            "fleet_summary": {
+                "total_devices": total_devices,
+                "status_counts": fleet_sync_summary,
+                "status_percentages": fleet_percentages,
+                "overall_health": fleet_health
+            },
+            "vessel_summaries": vessel_sync_summaries,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
     def _get_component_status_distribution(
         self, 
         fleet_metrics: Dict[str, VesselMetrics], 
@@ -460,7 +535,8 @@ class FleetDashboard:
     def _calculate_vessel_statuses(
         self,
         fleet_metrics: Dict[str, VesselMetrics],
-        fleet_sla_statuses: Dict[str, Dict[ComponentType, SLAStatus]]
+        fleet_sla_statuses: Dict[str, Dict[ComponentType, SLAStatus]],
+        include_devices: bool = False
     ) -> Dict[str, VesselSummary]:
         """Calculate status summaries for all vessels"""
         vessel_summaries = {}
@@ -486,6 +562,11 @@ class FleetDashboard:
                 for component_status in vessel_metrics.get_all_components().values()
             )
             
+            # Include device details if requested
+            devices = None
+            if include_devices:
+                devices = self._extract_device_details(vessel_metrics)
+            
             vessel_summary = VesselSummary(
                 vessel_id=vessel_id,
                 status=vessel_status,
@@ -494,7 +575,8 @@ class FleetDashboard:
                 components_up=components_up,
                 components_total=components_total,
                 worst_component_uptime=worst_uptime,
-                last_updated=vessel_metrics.timestamp
+                last_updated=vessel_metrics.timestamp,
+                devices=devices
             )
             vessel_summaries[vessel_id] = vessel_summary
         
@@ -554,6 +636,127 @@ class FleetDashboard:
             AlertSeverity.MEDIUM: "alert-medium",
             AlertSeverity.LOW: "alert-low"
         }[severity]
+    
+    def _extract_device_details(self, vessel_metrics: VesselMetrics) -> List[DeviceDetail]:
+        """Extract individual device details from vessel metrics"""
+        device_details = []
+        
+        for component_type, component_status in vessel_metrics.get_all_components().items():
+            for device in component_status.devices:
+                # Determine data sync status
+                sync_status = self._determine_sync_status(device, component_status)
+                
+                device_detail = DeviceDetail(
+                    ip_address=device.ip_address,
+                    component_type=component_type,
+                    uptime_percentage=device.uptime_percentage,
+                    current_status=device.current_status,
+                    downtime_aging_hours=device.downtime_aging.total_seconds() / 3600,
+                    last_ping_time=device.last_ping_time,
+                    has_data=device.has_data,
+                    sync_status=sync_status
+                )
+                device_details.append(device_detail)
+        
+        return device_details
+    
+    def _determine_sync_status(self, device: 'DeviceStatus', component_status: ComponentStatus) -> str:
+        """
+        Determine data sync status for a device based on has_data flag and operational status.
+        
+        Args:
+            device: Individual device status
+            component_status: Parent component status
+            
+        Returns:
+            String indicating sync status: 'operational', 'no_data', 'sync_failed', 'confirmed_down'
+        """
+        # No data available - could be new device or sync issue
+        if not device.has_data:
+            return "no_data"
+        
+        # Device is confirmed down based on operational status
+        if device.current_status == OperationalStatus.DOWN:
+            return "confirmed_down"
+        
+        # Device has data but poor performance indicates sync issues
+        if device.uptime_percentage < 50:
+            return "sync_failed"
+        
+        # Device is operational with good data sync
+        return "operational"
+    
+    def get_sync_status_summary(self, vessel_metrics: VesselMetrics) -> Dict[str, Any]:
+        """
+        Get a summary of data sync statuses for a vessel.
+        
+        Args:
+            vessel_metrics: Vessel metrics to analyze
+            
+        Returns:
+            Dictionary with sync status breakdown
+        """
+        status_counts = {
+            "operational": 0,
+            "no_data": 0,
+            "sync_failed": 0,
+            "confirmed_down": 0
+        }
+        
+        total_devices = 0
+        devices_by_status = {status: [] for status in status_counts.keys()}
+        
+        for component_type, component_status in vessel_metrics.get_all_components().items():
+            for device in component_status.devices:
+                sync_status = self._determine_sync_status(device, component_status)
+                status_counts[sync_status] += 1
+                total_devices += 1
+                
+                devices_by_status[sync_status].append({
+                    "ip_address": device.ip_address,
+                    "component_type": component_type.value,
+                    "uptime_percentage": device.uptime_percentage,
+                    "last_ping_time": device.last_ping_time.isoformat(),
+                    "has_data": device.has_data
+                })
+        
+        return {
+            "vessel_id": vessel_metrics.vessel_id,
+            "total_devices": total_devices,
+            "status_counts": status_counts,
+            "status_percentages": {
+                status: round((count / max(total_devices, 1)) * 100, 1)
+                for status, count in status_counts.items()
+            },
+            "devices_by_status": devices_by_status,
+            "overall_sync_health": self._calculate_sync_health(status_counts, total_devices)
+        }
+    
+    def _calculate_sync_health(self, status_counts: Dict[str, int], total_devices: int) -> str:
+        """
+        Calculate overall sync health based on device status distribution.
+        
+        Args:
+            status_counts: Count of devices by sync status
+            total_devices: Total number of devices
+            
+        Returns:
+            Overall sync health: 'excellent', 'good', 'degraded', 'critical'
+        """
+        if total_devices == 0:
+            return "unknown"
+        
+        operational_percentage = (status_counts["operational"] / total_devices) * 100
+        problem_percentage = ((status_counts["sync_failed"] + status_counts["confirmed_down"]) / total_devices) * 100
+        
+        if operational_percentage >= 95:
+            return "excellent"
+        elif operational_percentage >= 80:
+            return "good"
+        elif operational_percentage >= 60:
+            return "degraded"
+        else:
+            return "critical"
     
     def _format_duration(self, duration: timedelta) -> str:
         """Format timedelta in human-readable format"""
